@@ -1,0 +1,9 @@
+
+#
+*.pth
+*.zip
+*.csv
+*__pycache__*
+.cache
+scripts
+*.sw*
