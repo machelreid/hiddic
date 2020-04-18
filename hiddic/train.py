@@ -183,15 +183,7 @@ class Trainer(obejct):
         return best_so_far, out_of_patience
 
     def _update_metric_history(
-        self,
-        val_pass,
-        all_val_metrics,
-        metric,
-        task_name,
-        metric_infos,
-        metric_decreases,
-        should_save,
-        new_best,
+        self, val_pass, metric, current_value, metric_infos, metric_decreases,
     ):
         """
         This function updates metric history with the best validation score so far.
@@ -214,24 +206,21 @@ class Trainer(obejct):
         should_save: bool
         new_best: bool
         """
-        this_val_metric = all_val_metrics[metric]
-        metric_history = metric_infos[metric]["hist"]
-        metric_history.append(this_val_metric)
+
+        metric_history = self._metric_infos[metric].get(["hist"])
+        if metric_history is None:
+            self._metric_infos[metric]["hist"] = []
+        metric_history.append(current_value)
         is_best_so_far, out_of_patience = self._check_history(
-            metric_history, this_val_metric, metric_decreases
+            metric_history, current_value, metric_decreases
         )
         if is_best_so_far:
             log.info("Best result seen so far for %s.", task_name)
-            metric_infos[metric]["best"] = (val_pass, all_val_metrics)
+            self._metric_infos[metric]["best"] = (val_pass, all_val_metrics)
             should_save = True
-            if task_name == "macro":
-                new_best = True
         if out_of_patience:
-            metric_infos[metric]["stopped"] = True
-            # Commented out the below line as more confusing than helpful. May make sense to
-            # restore if we wind up using more complex stopping strategies.
-            # log.info("Out of early stopping patience. Stopped tracking %s.", task_name)
-        return metric_infos, this_val_metric, should_save, new_best
+            self._metric_infos[metric]["stopped"] = True
+        return is_best_so_far, out_of_patience
 
     def _calculate_validation_performance(
         self,
@@ -286,7 +275,13 @@ class Trainer(obejct):
         self._epoch_steps += 1
         if self._epoch_steps > self._max_epochs:
             log.info(f"Max Epoch Steps {self._max_epochs} reached. Training Stopped.")
-            break
+            return
+        elif self._patience_exceeded:
+            log.info(
+                f"Patience has already been exceeded for every metric. In other words, I've become IMPATIENT. Training Stopped."
+            )
+            return
+
         train_iterator = self._datamaker.get_iterator(
             "train", batch_size, device=self._device
         )
@@ -410,42 +405,43 @@ class Trainer(obejct):
         )
 
         self._TB_validation_log.add_scalar("Perplexity", ppl, self._epoch_steps)
+
         bleu_best, bleu_patience = self._update_metric_history(
-            self.val_pass,
-            all_val_metrics,
-            bleu,
-            self.metric_infos,
-            metric_decreases,
-            should_save,
-            new_best,
+            self._epoch_steps, "bleu", bleu, self._metric_infos, metric_decreases=False,
         )
 
         ppl_best, ppl_patience = self._update_metric_history(
-            self.val_pass,
-            all_val_metrics,
-            metric,
-            self.metric_infos,
-            metric_decreases,
-            should_save,
-            new_best,
+            self._epoch_steps,
+            "perplexity",
+            ppl,
+            self._metric_infos,
+            metric_decreases=True,
         )
 
         if self.save_every_iter:
             torch.save(
                 self._model.state_dict(),
                 os.path.join(
-                    self._serialization_dir, "model", f"iter_{self.val_pass}.pth"
+                    self._serialization_dir, "model", f"iter_{self._epoch_steps}.pth"
                 ),
             )
         if bleu_best:
             torch.save(
                 self._model.state_dict(),
-                os.path.join(self._serialization_dir, "model", "BLEU_BEST.pth"),
+                os.path.join(
+                    self._serialization_dir,
+                    "model",
+                    f"BLEU_BEST_{self._epoch_steps}.pth",
+                ),
             )
         if ppl_best:
             torch.save(
                 self._model.state_dict(),
-                os.path.join(self._serialization_dir, "model", "PPL_BEST.pth"),
+                os.path.join(
+                    self._serialization_dir,
+                    "model",
+                    f"PPL_BEST_{self._epoch_steps}.pth",
+                ),
             )
         if not bleu_patience and not ppl_patience:
             log.info("Ran out of patience for both BLEU and perplexity")
