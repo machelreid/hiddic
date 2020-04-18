@@ -4,7 +4,7 @@ from model import DefinitionProbing
 from data import get_dm_conf, DataMaker
 from modules import get_pretrained_transformer
 
-config_parser = StrictConfigParser(default=os.path.join(config, "hiddic.yaml"))
+config_parser = StrictConfigParser(default=os.path.join("config", "hiddic.yaml"))
 
 if __name__ == "__main__":
 
@@ -28,6 +28,7 @@ if __name__ == "__main__":
     datamaker = DataMaker(data_fields, config.datapath)
     datamaker.build_data(config.dataset)
     ####################################
+    ####################################
 
     ############### MODEL ##############
     embeddings = DotMap(
@@ -48,10 +49,11 @@ if __name__ == "__main__":
         max_layer=args.max_layer,
         src_pad_idx=datamaker.vocab.example.pad_token_id,
         encoder_hidden=args.encoder_hidden,
-    )
+    ).to(config.device)
+    ####################################
     ####################################
 
-    ############### TRAIN ##############
+    ########## TRAINING LOOP ###########
     trainer = build_trainer(model, config, datamaker)
 
     for i in range(config.max_epochs):
@@ -59,6 +61,7 @@ if __name__ == "__main__":
         if train_out is None:
             break
         valid_out = trainer._validate(args.valid_batch_size)
+    ####################################
     ####################################
 
     # logger = Logger(
