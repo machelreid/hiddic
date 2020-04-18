@@ -99,5 +99,5 @@ def batch_bleu(ref, hyp, reduction="sum"):
         return total_score / len(ref)
     else:
         raise NotImplementedError(
-            "f{reduction} not in supported reductions: ['sum','average']"
+            f"{reduction} not in supported reductions: ['sum','average']"
         )

@@ -74,7 +74,7 @@ class DefinitionProbing(nn.Module):
 
         return DotMap({"predicitions": predictions, "logits": logits, "loss": loss})
 
-    def _validate(self, input, seq_lens, span_token_ids, target, vocab):
+    def _validate(self, input, seq_lens, span_token_ids, target, tgt_lens, decode_strategy):
         batch_size, tgt_len = target.shape
 
         # (batch_size,seq_len,hidden_size), (batch_size,hidden_size), (num_layers,batch_size,seq_len,hidden_size)
@@ -82,10 +82,10 @@ class DefinitionProbing(nn.Module):
             input, attention_mask=sequence_mask(seq_lens)
         )
 
-        span_ids = self._id_extractor(tokens=span_token_ids, batch=input, lens=seq_lens)
+        span_ids = self._id_extractor(tokens=npan_token_ids, batch=input, lens=seq_lens)
 
         memory_bank = last_hidden_layer if self.decoder.attention else None
-        predictions, logits = self.decoder(target, span_representation, memory_bank)
+        _, logits = self.decoder(target, span_representation, memory_bank)
 
         loss = F.cross_entropy(
             logits.view(batch_size * tgt_len - 1),
@@ -94,17 +94,19 @@ class DefinitionProbing(nn.Module):
         )
 
         ppl = loss.exp()
-        self, input, src_lens, target, tgt_lens, tgt_vocabs, decode_strategy
+        beam_results = self._strategic_decode(
+            target, tgt_lens, decode_strategy, span_representation
+        )
         return DotMap(
             {
-                "predictions": predictions,
+                "predictions": beam_results["predictions"]",
                 "logits": logits,
                 "loss": loss,
                 "perplexity": ppl,
             }
         )
 
-    def _strategic_decode(self, target, tgt_lens, tgt_vocabs, decode_strategy):
+    def _strategic_decode(self, target, tgt_lens, decode_strategy, span_representation):
         """Translate a batch of sentences step by step using cache.
         Args:
             batch: a batch of sentences, yield by data iterator.
@@ -120,18 +122,6 @@ class DefinitionProbing(nn.Module):
         # use_src_map = self.copy_attn
         batch_size, max_len = target.shape
 
-        # (1) Run the encoder on the src.
-        # (batch_size,seq_len,hidden_size), (batch_size,hidden_size), (num_layers,batch_size,seq_len,hidden_size)
-        last_hidden_layer, pooled_representation, all_hidden_layers = self.encoder(
-            input, attention_mask=sequence_mask(src_lens)
-        )
-
-        span_ids = self._id_extractor(tokens=span_token_ids, batch=input, lens=seq_lens)
-
-        span_representation = self._span_aggregator(
-            all_hidden_layers, sequence_mask(seq_lens), span_ids
-        )
-
         memory_bank = last_hidden_layer if self.decoder.attention else None
 
         # Initialize the hidden states
@@ -141,7 +131,6 @@ class DefinitionProbing(nn.Module):
             "predictions": None,
             "scores": None,
             "attention": None,
-            "batch": batch,
             # "gold_score": self._gold_score(
             #    batch, memory_bank, src_lengths, src_vocabs, use_src_map,
             #    enc_states, batch_size, src)
@@ -266,6 +255,13 @@ class LSTM_Decoder(nn.Module):
         )
         self.lstm_decoder = nn.ModuleList()
         self.num_layers = num_layers
+
+        #self.lstm_decoder = nn.ModuleList([
+        #    nn.LSTMCell(self.embeddings.embedding_dim, self.hidden)
+        #    for i in range(self.num_layers) if i==0 else
+        #    nn.LSTMCell(self.hidden,self.hidden)
+        #])
+
         for i in range(self.num_layers):
             if i == 0:
                 self.lstm_decoder.append(

@@ -479,7 +479,7 @@ class Trainer(obejct):
                 batch["target"],
             )
         elif phase in ["valid", "test"]:
-            return self._model(
+            return self._model._validate(
                 batch["input_ids"],
                 batch["seq_lens"],
                 batch["span_ids"],
