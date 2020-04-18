@@ -28,6 +28,8 @@ if __name__ == "__main__":
     datamaker = DataMaker(data_fields, config.datapath)
     datamaker.build_data(config.dataset)
     ####################################
+
+    ############### MODEL ##############
     embeddings = DotMap(
         {
             "tgt": nn.Embedding(
@@ -47,6 +49,9 @@ if __name__ == "__main__":
         src_pad_idx=datamaker.vocab.example.pad_token_id,
         encoder_hidden=args.encoder_hidden,
     )
+    ####################################
+
+    ############### TRAIN ##############
     trainer = build_trainer(model, config, datamaker)
 
     for i in range(config.max_epochs):
@@ -54,6 +59,7 @@ if __name__ == "__main__":
         if train_out is None:
             break
         valid_out = trainer._validate(args.valid_batch_size)
+    ####################################
 
     # logger = Logger(
     #    config,

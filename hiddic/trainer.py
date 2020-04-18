@@ -24,7 +24,7 @@ def build_trainer(
         patience=args.patience,
         # val_interval=100,
         val_metric="loss",
-        serialization_dir=None,
+        serialization_dir=args.serialization_dir,
         # max_vals=50,
         device="cuda",
         clip_grad_norm_val=args.clip,
@@ -309,10 +309,10 @@ class Trainer(obejct):
                 target=definition,
             )
             generations.extend(
-                self.datamaker.decode(model_out.predictions, "definition", batch=True)
+                self._datamaker.decode(model_out.predictions, "definition", batch=True)
             )
-            targets.extend(self.datamaker.decode(definition, "definition", batch=True))
-            sources.extend(self.datamaker.decode(example, "example", batch=True))
+            targets.extend(self._datamaker.decode(definition, "definition", batch=True))
+            sources.extend(self._datamaker.decode(example, "example", batch=True))
             self._TB_train_log.add_scalar(
                 "loss", model_out.loss.item(), self._train_counter
             )
@@ -401,10 +401,10 @@ class Trainer(obejct):
                 decode_strategy=decode_strategy,
             )
             generations.extend(
-                self.datamaker.decode(model_out.predictions, "definition", batch=True)
+                self._datamaker.decode(model_out.predictions, "definition", batch=True)
             )
-            targets.extend(self.datamaker.decode(definition, "definition", batch=True))
-            sources.extend(self.datamaker.decode(example, "example", batch=True))
+            targets.extend(self._datamaker.decode(definition, "definition", batch=True))
+            sources.extend(self._datamaker.decode(example, "example", batch=True))
 
             logits_for_ppl_calc.append(model_out.logits)
             tgt_idxs_for_ppl_calc.append(definition[:, 1:].contiguous().view(-1))
@@ -479,6 +479,9 @@ class Trainer(obejct):
                     f"BLEU_BEST_{self._epoch_steps}.pth",
                 ),
             )
+
+        self._write_metric_info()
+
         if ppl_best:
             torch.save(
                 self._model.state_dict(),
@@ -567,3 +570,7 @@ class Trainer(obejct):
         self._model = model
         if self._load_model:
             self._model.load_state_dict(torch.load(self._load_model))
+
+    def _write_metric_info(self):
+        with open(os.path.join(self._serialization_dir, "metric.json"), "w") as fp:
+            json.dump(self._metric_infos, fp)
