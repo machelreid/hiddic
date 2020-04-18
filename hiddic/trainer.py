@@ -11,7 +11,7 @@ import logging
 
 
 def build_trainer(
-    args, cuda_device, model, data_fields, metric_should_decrease=True,
+    args, model, data_fields, metric_should_decrease=True,
 ):
     if phase not in ["train"]:
         raise NotImplementedError(
@@ -42,6 +42,8 @@ def build_trainer(
         datapath=args.datapath,
         data_args=data_fields,
         dataset=args.dataset,
+        lr_scheduling_metric=args.lr_scheduling_metric,
+        metric_decreases=args.metric_decreases,
     )
 
     return trainer
@@ -76,6 +78,8 @@ class Trainer(obejct):
         datapath=None,
         data_args=None,
         dataset=None,
+        lr_scheduling_metric=None,
+        metric_decreases=None,
     ):
         """
         The training coordinator. Unusually complicated to handle MTL with tasks of
@@ -131,6 +135,8 @@ class Trainer(obejct):
         self._data_args = data_args
         self._dataset = dataset
         self._initial_lr = initial_lr
+        self._lr_scheduling_metric = lr_scheduling_metric
+        self._metric_decreases = metric_decreases
 
         self._metric_infos = {}
 
@@ -140,17 +146,21 @@ class Trainer(obejct):
         self._optimizer = optim.Adam(self._trainable_params, lr=self._initial_lr)
         self._scheduler = ReduceLROnPlateau(
             self._optimizer,
-            mode="min",
+            mode="min" if self._metric_decreases else "max",
             patience=self._lr_patience,
             verbose=True,
             min_lr=self._min_lr if self._min_lr else 0,
         )
 
+        if beam_size == 1:
+            log.warining(
+                "WARNING: Beam size is 1, note that this is equivalent to greedy search"
+            )
         self._beam_size = beam_size
-        self.n_best = n_best
-        self.min_length = min_length
-        self.max_length = max_length
-        self.ratio = ratio
+        self._n_best = n_best
+        self._min_length = min_length
+        self._max_length = max_length
+        self._ratio = ratio
 
         self._datamaker = data.DataMaker(self._data_args, self._datapath)
         self._datamaker.build_data(self._dataset)
@@ -350,10 +360,10 @@ class Trainer(obejct):
             pad=self._tgt_pad_idx,
             bos=self._tgt_bos_idx,
             eos=self._tgt_eos_idx,
-            n_best=1 if self.n_best is None else self.n_best,
+            n_best=1 if self._n_best is None else self._n_best,
             global_scorer=self._model.global_scorer,
-            min_length=self.min_length,
-            max_length=self.max_length,
+            min_length=self._min_length,
+            max_length=self._max_length,
             return_attention=False,
             block_ngram_repeat=3,
             exclusion_tokens=self._exclusion_idxs,
@@ -491,15 +501,13 @@ class Trainer(obejct):
 
         log.info(f"Updating LR scheduler with {self._lr_scheduling_metric}:")
 
-        self._scheduler.step(lr_scheduling_metric, self._epoch_steps)
+        self._scheduler.step(lr_scheduling_metric)
         log.info(
-            "\tBest result seen so far for %s: %.3f",
-            metric,
-            self._scheduler.lr_scheduler.best,
+            "\tBest result seen so far for %s: %.3f", metric, self._scheduler.best,
         )
         log.info(
             "\t# validation passes without improvement: %d",
-            self._scheduler.lr_scheduler.num_bad_epochs,
+            self._scheduler.num_bad_epochs,
         )
 
         self._scheduler.step(model_out.loss)

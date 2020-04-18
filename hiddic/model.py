@@ -102,7 +102,7 @@ class DefinitionProbing(nn.Module):
         return DotMap(
             {
                 "predictions": beam_results["predictions"],
-                "logits": logits,
+                "logits": logits.view(batch_size * tgt_len - 1, -1),
                 "loss": loss,
                 "perplexity": ppl,
             }
