@@ -7,20 +7,47 @@ from beam import BeamSearch
 from tensorboardX import SummaryWriter
 from utils import batch_bleu
 import os
+import logging
 
 
 def build_trainer(
-    args,
-    cuda_device,
-    task_names,
-    model,
-    run_dir,
-    metric_should_decrease=True,
-    train_type="SamplingMultiTaskTrainer",
-    phase="pretrain",
+    args, cuda_device, model, data_fields, metric_should_decrease=True,
 ):
-    if phase not in ["pretrain", "train", "tune"]:
-        raise NotImplementedError
+    if phase not in ["train"]:
+        raise NotImplementedError(
+            "PRETRAIN and TUNE modes to be implemented, only TRAIN mode is supported"
+        )
+
+    trainer = Trainer(
+        model,
+        patience=args.patience,
+        # val_interval=100,
+        val_metric="loss",
+        serialization_dir=None,
+        # max_vals=50,
+        device="cuda",
+        clip_grad_norm_val=args.clip,
+        initial_lr=args.lr,
+        min_lr=args.min_lr,
+        lr_patience=None,
+        keep_all_checkpoints=args.keep_all_checkpoints,
+        val_data_limit=args.val_data_limit,
+        max_epochs=args.val_data_limit,
+        training_data_fraction=args.training_data_fraction,
+        beam_size=args.beam_size,
+        min_length=args.min_length,
+        max_length=args.max_lengh,
+        n_best=1,
+        ratio=None,
+        datapath=args.datapath,
+        data_args=data_fields,
+        dataset=args.dataset,
+    )
+
+    return trainer
+
+
+log = logging.getLogger()
 
 
 class Trainer(obejct):
@@ -31,7 +58,6 @@ class Trainer(obejct):
         # val_interval=100,
         val_metric="loss",
         serialization_dir=None,
-        max_vals=50,
         device="cuda",
         clip_grad_norm_val=None,
         initial_lr=None,
@@ -91,7 +117,6 @@ class Trainer(obejct):
         self._model = model
 
         self._patience = patience
-        self._max_vals = max_vals
         self._val_interval = val_interval
         self._serialization_dir = serialization_dir
         self._device = device
@@ -101,15 +126,13 @@ class Trainer(obejct):
         self._keep_all_checkpoints = keep_all_checkpoints
         self._val_data_limit = val_data_limit
         self._max_epochs = max_epochs
-        self._dec_val_scale = dec_val_scale
         self._training_data_fraction = training_data_fraction
         self._datapath = datapath
         self._data_args = data_args
         self._dataset = dataset
         self._initial_lr = initial_lr
 
-        self._task_infos = None
-        self._metric_infos = None
+        self._metric_infos = {}
 
         self._trainable_params = filter(
             lambda p: p.requires_grad, self._model.parameters()
@@ -125,8 +148,8 @@ class Trainer(obejct):
 
         self._beam_size = beam_size
         self.n_best = n_best
-        self.min_length = 3
-        self.max_length = 10
+        self.min_length = min_length
+        self.max_length = max_length
         self.ratio = ratio
 
         self._datamaker = data.DataMaker(self._data_args, self._datapath)
@@ -207,6 +230,9 @@ class Trainer(obejct):
         new_best: bool
         """
 
+        metric_exists = self._metric_infos.get(metric)
+        if not metric_exists:
+            self._metric_infos[metric] = {}
         metric_history = self._metric_infos[metric].get(["hist"])
         if metric_history is None:
             self._metric_infos[metric]["hist"] = []
@@ -256,17 +282,6 @@ class Trainer(obejct):
         # if task_name == "macro" and isinstance(
         #     self._scheduler.lr_scheduler, ReduceLROnPlateau
         # ):
-        #     log.info("Updating LR scheduler:")
-        #     self._scheduler.step(this_val_metric, val_pass)
-        #     log.info(
-        #         "\tBest result seen so far for %s: %.3f",
-        #         metric,
-        #         self._scheduler.lr_scheduler.best,
-        #     )
-        #     log.info(
-        #         "\t# validation passes without improvement: %d",
-        #         self._scheduler.lr_scheduler.num_bad_epochs,
-        #     )
 
         return all_val_metrics, should_save, new_best
 
@@ -406,6 +421,8 @@ class Trainer(obejct):
 
         self._TB_validation_log.add_scalar("Perplexity", ppl, self._epoch_steps)
 
+        metric_dict = {"bleu": bleu, "perplexity": ppl}
+
         bleu_best, bleu_patience = self._update_metric_history(
             self._epoch_steps, "bleu", bleu, self._metric_infos, metric_decreases=False,
         )
@@ -418,7 +435,7 @@ class Trainer(obejct):
             metric_decreases=True,
         )
 
-        if self.save_every_iter:
+        if self._keep_all_checkpoints:
             torch.save(
                 self._model.state_dict(),
                 os.path.join(
@@ -465,9 +482,34 @@ class Trainer(obejct):
                 )
             )
 
+        lr_scheduling_metric = metric_dict.get(self._lr_scheduling_metric)
+        if lr_scheduling_metric is None:
+            lr_scheduling_metric = ppl
+            log.warning(
+                f"WARNING: {self._lr_scheduling_metric} not found as a metric for validation performance calculation. REVERTING TO PERPLEXITY INSTEAD"
+            )
+
+        log.info(f"Updating LR scheduler with {self._lr_scheduling_metric}:")
+
+        self._scheduler.step(lr_scheduling_metric, self._epoch_steps)
+        log.info(
+            "\tBest result seen so far for %s: %.3f",
+            metric,
+            self._scheduler.lr_scheduler.best,
+        )
+        log.info(
+            "\t# validation passes without improvement: %d",
+            self._scheduler.lr_scheduler.num_bad_epochs,
+        )
+
         self._scheduler.step(model_out.loss)
 
         return DotMap({"src": sources, "tgt": targets, "gen": generations})
+
+    def _reset_steps(self):
+        self._epoch_steps = 0
+        self._validation_counter = 0
+        self._train_counter = 0
 
     def _forward(self, phase: str = "train", **batch):
 
