@@ -6,6 +6,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from beam import BeamSearch
 from tensorboardX import SummaryWriter
 from utils import batch_bleu
+import os
 
 
 def build_trainer(
@@ -31,7 +32,7 @@ class Trainer(obejct):
         val_metric="loss",
         serialization_dir=None,
         max_vals=50,
-        cuda_device=-1,
+        device="cuda",
         clip_grad_norm_val=None,
         initial_lr=None,
         lr_decay=None,
@@ -93,7 +94,7 @@ class Trainer(obejct):
         self._max_vals = max_vals
         self._val_interval = val_interval
         self._serialization_dir = serialization_dir
-        self._cuda_device = cuda_device
+        self._device = device
         self._clip_grad_norm_val = clip_gram_norm_val
         self._lr_decay = lr_decay
         self._min_lr = min_lr
@@ -146,6 +147,9 @@ class Trainer(obejct):
             self._TB_dir = os.path.join(self._serialization_dir, "tensorboard")
             self._TB_train_log = SummaryWriter(os.path.join(self._TB_dir, "train"))
             self._TB_validation_log = SummaryWriter(os.path.join(self._TB_dir, "val"))
+
+            self._validation_log_dir = os.path.join(self._serialization_dir, "valid")
+            self._train_log_dir = os.path.join(self._serialization_dir, "train")
 
     def _check_metric_history(
         self, metric_history, current_score, should_decrease=False
@@ -258,93 +262,22 @@ class Trainer(obejct):
         """
         TODO = TODO
 
-    def _validate(self, val_pass, tasks, batch_size, periodic_save=True):
-
-        """
-        Validate on all tasks and return the results and whether to save this validation
-        pass or not.
-        Parameters
-        ----------
-        val_pass: int
-        tasks: list of task objects to train on
-        batch_size: int, the batch size to use for the tasks.periodic_save
-        periodic_save: bool, value of whether or not to save model and progress periodically
-        Returns
-        __________
-        all_val_metrics: dictinary updated with micro and macro average validation performance
-        should_save: bool, determines whether to save a checkpoint
-        new_best: bool, whether or not the macro performance increased
-        """
-        task_infos, metric_infos = self._task_infos, self._metric_infos
-        self._model.eval()
-        all_val_metrics = {("%s_loss" % task.name): 0.0 for task in tasks}
-        all_val_metrics["macro_avg"] = 0.0
-        all_val_metrics["micro_avg"] = 0.0
-        n_examples_overall = 0.0
-
-        # Get validation numbers for each task
-        for task in tasks:
-            (
-                n_examples_overall,
-                task_infos,
-                all_val_metrics,
-            ) = self._calculate_validation_performance(
-                task, task_infos, tasks, batch_size, all_val_metrics, n_examples_overall
-            )
-        # scale the micro avg contributions w/ total size of validation set.
-        if "micro_avg" in all_val_metrics:
-            all_val_metrics["micro_avg"] /= n_examples_overall
-        # Track per task patience
-        should_save = periodic_save  # whether to save this validation pass or not.
-        # Currently we save every validation in the main training runs.
-        new_best = False  # whether this validation pass is a new best
-
-        # update metric infos
-        for task in tasks + ["micro", "macro"]:
-            if task in ["micro", "macro"]:
-                metric = "%s_avg" % task
-                metric_decreases = (
-                    tasks[0].val_metric_decreases if len(tasks) == 1 else False
-                )
-                task_name = task
-            else:
-                metric = task.val_metric
-                metric_decreases = task.val_metric_decreases
-                task_name = task.name
-            if metric_infos[metric]["stopped"]:
-                continue
-            (
-                metric_infos,
-                this_val_metric,
-                should_save,
-                new_best,
-            ) = self._update_metric_history(
-                val_pass,
-                all_val_metrics,
-                metric,
-                task_name,
-                metric_infos,
-                metric_decreases,
-                should_save,
-                new_best,
-            )
-
-            # Get scheduler, and update using macro score
-            # micro has no scheduler updates
-            if task_name == "macro" and isinstance(
-                self._scheduler.lr_scheduler, ReduceLROnPlateau
-            ):
-                log.info("Updating LR scheduler:")
-                self._scheduler.step(this_val_metric, val_pass)
-                log.info(
-                    "\tBest result seen so far for %s: %.3f",
-                    metric,
-                    self._scheduler.lr_scheduler.best,
-                )
-                log.info(
-                    "\t# validation passes without improvement: %d",
-                    self._scheduler.lr_scheduler.num_bad_epochs,
-                )
+        # # Get scheduler, and update using macro score
+        # # micro has no scheduler updates
+        # if task_name == "macro" and isinstance(
+        #     self._scheduler.lr_scheduler, ReduceLROnPlateau
+        # ):
+        #     log.info("Updating LR scheduler:")
+        #     self._scheduler.step(this_val_metric, val_pass)
+        #     log.info(
+        #         "\tBest result seen so far for %s: %.3f",
+        #         metric,
+        #         self._scheduler.lr_scheduler.best,
+        #     )
+        #     log.info(
+        #         "\t# validation passes without improvement: %d",
+        #         self._scheduler.lr_scheduler.num_bad_epochs,
+        #     )
 
         return all_val_metrics, should_save, new_best
 
@@ -354,7 +287,9 @@ class Trainer(obejct):
         if self._epoch_steps > self._max_epochs:
             log.info(f"Max Epoch Steps {self._max_epochs} reached. Training Stopped.")
             break
-        train_iterator = self._datamaker.get_iterator("train", batch_size)
+        train_iterator = self._datamaker.get_iterator(
+            "train", batch_size, device=self._device
+        )
 
         generations = []
         targets = []
@@ -390,7 +325,9 @@ class Trainer(obejct):
 
     def _validate(self, batch_size):
 
-        valid_iterator = self._datamaker.get_iterator("valid", batch_size)
+        valid_iterator = self._datamaker.get_iterator(
+            "valid", batch_size, device=self._device
+        )
 
         generations = []
         targets = []
@@ -423,6 +360,7 @@ class Trainer(obejct):
             definition, definition_lens = batch.definition
             word, word_lens = batch.word
 
+            current_batch_size = word.shape[0]
             model_out = self._forward(
                 "valid",
                 input_ids=example,
@@ -443,18 +381,22 @@ class Trainer(obejct):
             self._TB_validation_log.add_scalar(
                 "batch_perplexity", model_out.ppl.item(), self._validation_counter
             )
+
             current_bleu = batch_bleu(
-                targets[-batch_size:], generations[-batch_size:], reduction="average"
+                targets[-current_batch_size:],
+                generations[-current_batch_size:],
+                reduction="average",
             )
             self._TB_validation_log.add_scalar(
                 "batch_BLEU", current_bleu, self._validation_counter
             )
+
             if self._max_val_data:
                 if i * batch_size > self._max_val_data:
                     break
         bleu = batch_bleu(targets, generations, reduction="average")
         self._TB_validation_log.add_scalar(
-            "BLEU", model_out.ppl.item(), self._validation_counter
+            "BLEU", model_out.ppl.item(), self._epoch_steps
         )
 
         ppl = (
@@ -504,6 +446,27 @@ class Trainer(obejct):
             torch.save(
                 self._model.state_dict(),
                 os.path.join(self._serialization_dir, "model", "PPL_BEST.pth"),
+            )
+        if not bleu_patience and not ppl_patience:
+            log.info("Ran out of patience for both BLEU and perplexity")
+
+        with open(
+            os.path.join(self._validation_log_dir, f"iter_{self._epoch_steps}.json"),
+            "w",
+        ) as f:
+            f.write(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "src": sources[i],
+                                "tgt": targets[i],
+                                "gen": generations[i],
+                            }
+                        )
+                        for i in range(len(generations))
+                    ]
+                )
             )
 
         self._scheduler.step(model_out.loss)

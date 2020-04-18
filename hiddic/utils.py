@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from nltk.tokenize import word_tokenize
 from nltk.translate.bleu_score import sentence_bleu
+import tqdm
 
 
 def get_output_attribute(out, attribute_name, cuda_device, reduction="sum"):
@@ -81,7 +82,9 @@ def batch_bleu(ref, hyp, reduction="sum"):
         """
         If the BLEU Score is goes to zero (no ngram matches),  decreases ngrams by 1
         """
-        temp = sentence_bleu([r], h, weights=[1 / ngrams] * ngrams)
+        temp = sentence_bleu(
+            [word_tokenize(r)], word_tokenize(h), weights=[1 / ngrams] * ngrams
+        )
         if temp >= 0.0001:
             return temp
         else:
@@ -90,7 +93,7 @@ def batch_bleu(ref, hyp, reduction="sum"):
     total_score = 0
     assert len(ref) == len(hyp)
 
-    for _ref, _hyp in zip(ref, hyp):
+    for _ref, _hyp in tqdm.tqdm(zip(ref, hyp), desc="Calculating BLEU: "):
         total_score += check_bleu(_ref, _hyp)
 
     if reduction == "sum":

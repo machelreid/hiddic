@@ -158,7 +158,9 @@ class DataMaker(object):
                 field_data[_field][1] = relevant_field
                 field_data[_field] = tuple(field_data[_field])
 
-    def get_iterator(self, dataset: str, batch_size: int = None, shuffle=None):
+    def get_iterator(
+        self, dataset: str, batch_size: int = None, shuffle=None, device=None
+    ):
         """
         Args:
             dataset (str): representing the partition of the data to iterate over
@@ -173,11 +175,17 @@ class DataMaker(object):
             raise NotImplementedError
 
         if dataset == "train":
-            return data.BucketIterator(self.train, batch_size, shuffle=shuffle)
+            return data.BucketIterator(
+                self.train, batch_size, shuffle=shuffle, device=device
+            )
         elif dataset == "valid":
-            return data.BucketIterator(self.valid, batch_size, shuffle=shuffle)
+            return data.BucketIterator(
+                self.valid, batch_size, shuffle=shuffle, device=device
+            )
         elif dataset == "test":
-            return data.BucketIterator(self.test, batch_size, shuffle=shuffle)
+            return data.BucketIterator(
+                self.test, batch_size, shuffle=shuffle, device=device
+            )
 
     def decode(self, input, vocab_partition, batch=False):
         """
