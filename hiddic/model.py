@@ -74,7 +74,9 @@ class DefinitionProbing(nn.Module):
 
         return DotMap({"predicitions": predictions, "logits": logits, "loss": loss})
 
-    def _validate(self, input, seq_lens, span_token_ids, target, tgt_lens, decode_strategy):
+    def _validate(
+        self, input, seq_lens, span_token_ids, target, tgt_lens, decode_strategy
+    ):
         batch_size, tgt_len = target.shape
 
         # (batch_size,seq_len,hidden_size), (batch_size,hidden_size), (num_layers,batch_size,seq_len,hidden_size)
@@ -99,7 +101,7 @@ class DefinitionProbing(nn.Module):
         )
         return DotMap(
             {
-                "predictions": beam_results["predictions"]",
+                "predictions": beam_results["predictions"],
                 "logits": logits,
                 "loss": loss,
                 "perplexity": ppl,
@@ -148,7 +150,7 @@ class DefinitionProbing(nn.Module):
         for step in range(decode_strategy.max_length):
             decoder_input = decode_strategy.current_predictions.view(1, -1, 1)
 
-            logits, attn = self.decoder.generate(decoder_input,)
+            logits, attn = self.decoder.generate(decoder_input)
 
             decode_strategy.advance(F.log_softmax(log_probs, 1), attn)
             any_finished = decode_strategy.is_finished.any()
@@ -256,11 +258,11 @@ class LSTM_Decoder(nn.Module):
         self.lstm_decoder = nn.ModuleList()
         self.num_layers = num_layers
 
-        #self.lstm_decoder = nn.ModuleList([
+        # self.lstm_decoder = nn.ModuleList([
         #    nn.LSTMCell(self.embeddings.embedding_dim, self.hidden)
         #    for i in range(self.num_layers) if i==0 else
         #    nn.LSTMCell(self.hidden,self.hidden)
-        #])
+        # ])
 
         for i in range(self.num_layers):
             if i == 0:

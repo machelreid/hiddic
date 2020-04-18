@@ -26,19 +26,19 @@ class Trainer(obejct):
     def __init__(
         self,
         model,
-        patience=3,
+        patience=4,
         # val_interval=100,
         val_metric="loss",
         serialization_dir=None,
         max_vals=50,
         cuda_device=-1,
-        grad_norm=None,
-        grad_clipping=None,
+        clip_grad_norm_val=None,
+        initial_lr=None,
         lr_decay=None,
         min_lr=None,
         lr_patience=None,
         keep_all_checkpoints=False,
-        val_data_limit=500,
+        val_data_limit=None,
         max_epochs=-1,
         training_data_fraction=0,
         beam_size=1,
@@ -94,8 +94,7 @@ class Trainer(obejct):
         self._val_interval = val_interval
         self._serialization_dir = serialization_dir
         self._cuda_device = cuda_device
-        self._grad_norm = grad_norm
-        self._grad_clipping = grad_clipping
+        self._clip_grad_norm_val = clip_gram_norm_val
         self._lr_decay = lr_decay
         self._min_lr = min_lr
         self._keep_all_checkpoints = keep_all_checkpoints
@@ -106,10 +105,15 @@ class Trainer(obejct):
         self._datapath = datapath
         self._data_args = data_args
         self._dataset = dataset
+        self._initial_lr = initial_lr
+
         self._task_infos = None
         self._metric_infos = None
 
-        self._optimizer = optim.Adam(self._model.parameters(), lr=0.001)
+        self._trainable_params = filter(
+            lambda p: p.requires_grad, self._model.parameters()
+        )
+        self._optimizer = optim.Adam(self._trainable_params, lr=self._initial_lr)
         self._scheduler = ReduceLROnPlateau(
             self._optimizer,
             mode="min",
@@ -380,8 +384,8 @@ class Trainer(obejct):
         generations = []
         targets = []
         sources = []
-        ppl = 0
 
+        logits_for_ppl_calc = []
         decode_strategy = BeamSearch(
             self.beam_size,
             batch_size,
@@ -413,6 +417,11 @@ class Trainer(obejct):
                 seq_lens=example_lens,
                 span_ids=word,
                 target=definition,
+                tgt_lens=definition_lens,
+                decode_strategy=decode_strategy,
+            )
+            torch.nn.utils.clip_grad_norm_(
+                self._trainable_params, self._clip_grad_norm_val
             )
             generations.extend(
                 self.datamaker.decode(model_out.predictions, "definition", batch=True)
@@ -483,7 +492,9 @@ class Trainer(obejct):
                 batch["input_ids"],
                 batch["seq_lens"],
                 batch["span_ids"],
-                self.datamaker.vocab,
+                batch["target"],
+                batch["tgt_lens"],
+                batch["decode_strategy"],
             )
         else:
             raise NotImplementedError
