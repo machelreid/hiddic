@@ -1,3 +1,4 @@
+from copy import deepcopy as cp
 import torchtext
 from torchtext.vocab import Vocab
 from torchtext import data
@@ -226,18 +227,38 @@ class DataMaker(object):
 _bert_tokenizer = get_huggingface_tokenizer(BertTokenizer, "bert-base-uncased")
 _roberta_tokenizer = get_huggingface_tokenizer(RobertaTokenizer, "roberta-base")
 
+
+def get_dm_conf(_type, field_name):
+    if _type in ["elmo", "normal"]:
+        conf = cp(dm_conf[_type])
+        conf["field"] = conf["name"] = field_name
+    else:
+        try:
+            conf = cp(dm_conf.transformers)
+            tokenizer = AutoTokenizer.from_pretrained(_type)
+            conf["tokenizer"] = tokenizer
+            conf["tokenize"] = tokenizer.encode
+            conf["pad_token"] = tokenizer.pad_token_id
+            conf["field"] = conf["name"] = field_name
+            return conf
+        except Exception as e:
+            raise NotImplementedError(
+                "We don't have that preprocessing mechanism yet " + str(e)
+            )
+
+
 dm_conf = DotMap(
     {
-        "bert": {
+        "transformer_base": {
             "name": None,
             "field": "src",
-            "tokenize": _bert_tokenizer.encode,
-            "tokenizer": _bert_tokenizer,
+            "tokenize": None,  # tokenizer.encode
+            "tokenizer": None,  # tokenizer
             "sequential": True,
             "eos": False,
             "sos": False,
             "use_vocab": False,
-            "pad_token": _bert_tokenizer.pad_token_id,
+            "pad_token": None,
             "postprocess": None,
             "include_lengths": True,
         },
@@ -251,19 +272,6 @@ dm_conf = DotMap(
             "sos": False,
             "use_vocab": False,
             "pad_token": 261,
-            "postprocess": None,
-            "include_lengths": True,
-        },
-        "roberta": {
-            "name": None,
-            "field": "src",
-            "tokenize": _roberta_tokenizer.encode,
-            "tokenizer": _roberta_tokenizer,
-            "sequential": True,
-            "eos": False,
-            "sos": False,
-            "use_vocab": False,
-            "pad_token": _roberta_tokenizer.pad_token_id,
             "postprocess": None,
             "include_lengths": True,
         },

@@ -8,10 +8,11 @@ from tensorboardX import SummaryWriter
 from utils import batch_bleu
 import os
 import logging
+from utils import mkdir
 
 
 def build_trainer(
-    args, model, data_fields, metric_should_decrease=True,
+    model, args, datamaker,
 ):
     if phase not in ["train"]:
         raise NotImplementedError(
@@ -39,11 +40,11 @@ def build_trainer(
         max_length=args.max_lengh,
         n_best=1,
         ratio=None,
-        datapath=args.datapath,
-        data_args=data_fields,
-        dataset=args.dataset,
+        datamaker=datamaker,
         lr_scheduling_metric=args.lr_scheduling_metric,
         metric_decreases=args.metric_decreases,
+        load_model=args.load_model,
+        load_optimizer=args.load_optimizer,
     )
 
     return trainer
@@ -75,11 +76,11 @@ class Trainer(obejct):
         max_length=512,
         n_best=1,
         ratio=None,
-        datapath=None,
-        data_args=None,
-        dataset=None,
+        datamaker=None,
         lr_scheduling_metric=None,
         metric_decreases=None,
+        load_model=None,
+        load_optimizer=None,
     ):
         """
         The training coordinator. Unusually complicated to handle MTL with tasks of
@@ -119,6 +120,9 @@ class Trainer(obejct):
             each epoch.
         """
         self._model = model
+        self._load_model = load_model
+        if self._load_model:
+            self._model.load_state_dict(torch.load(self._load_model))
 
         self._patience = patience
         self._val_interval = val_interval
@@ -139,11 +143,15 @@ class Trainer(obejct):
         self._metric_decreases = metric_decreases
 
         self._metric_infos = {}
+        self._patience_exceeded = False
 
         self._trainable_params = filter(
             lambda p: p.requires_grad, self._model.parameters()
         )
         self._optimizer = optim.Adam(self._trainable_params, lr=self._initial_lr)
+        self._load_optimizer = load_optimizer
+        if self._load_optimizer:
+            self._optimizer.load_state_dict(torch.load(load_optimizer))
         self._scheduler = ReduceLROnPlateau(
             self._optimizer,
             mode="min" if self._metric_decreases else "max",
@@ -162,8 +170,7 @@ class Trainer(obejct):
         self._max_length = max_length
         self._ratio = ratio
 
-        self._datamaker = data.DataMaker(self._data_args, self._datapath)
-        self._datamaker.build_data(self._dataset)
+        self._datamaker = datamaker
 
         self._epoch_steps = 0
         self._train_counter = 0
@@ -177,12 +184,18 @@ class Trainer(obejct):
 
         self._TB_dir = None
         if self._serialization_dir is not None:
-            self._TB_dir = os.path.join(self._serialization_dir, "tensorboard")
-            self._TB_train_log = SummaryWriter(os.path.join(self._TB_dir, "train"))
-            self._TB_validation_log = SummaryWriter(os.path.join(self._TB_dir, "val"))
+            self._TB_dir = mkdir(os.path.join(self._serialization_dir, "tensorboard"))
+            self._TB_train_log = SummaryWriter(
+                mkdir(os.path.join(self._TB_dir, "train"))
+            )
+            self._TB_validation_log = SummaryWriter(
+                mkdir(os.path.join(self._TB_dir, "val"))
+            )
 
-            self._validation_log_dir = os.path.join(self._serialization_dir, "valid")
-            self._train_log_dir = os.path.join(self._serialization_dir, "train")
+            self._validation_log_dir = mkdir(
+                os.path.join(self._serialization_dir, "valid")
+            )
+            self._train_log_dir = mkdir(os.path.join(self._serialization_dir, "train"))
 
     def _check_metric_history(
         self, metric_history, current_score, should_decrease=False
@@ -258,45 +271,11 @@ class Trainer(obejct):
             self._metric_infos[metric]["stopped"] = True
         return is_best_so_far, out_of_patience
 
-    def _calculate_validation_performance(
-        self,
-        task,
-        task_infos,
-        tasks,
-        batch_size,
-        all_val_metrics,
-        n_examples_overall,
-        print_output=True,
-    ):
-        """
-        Builds validation generator, evaluates on each task and produces validation metrics.
-        Parameters
-        ----------
-        task: current task to get validation performance of
-        task_infos: Instance of information about the task (see _setup_training for definition)
-        tasks: list of task objects to train on
-        batch_size: int, batch size to use for the tasks
-        all_val_metrics: dictionary. storing the validation performance
-        n_examples_overall: int, current number of examples the model is validated on
-        print_output: bool, prints one example per validation
-        Returns
-        -------
-        n_examples_overall: int, current number of examples
-        task_infos: updated Instance with reset training progress
-        all_val_metrics: dictinary updated with micro and macro average validation performance
-        """
-        TODO = TODO
-
-        # # Get scheduler, and update using macro score
-        # # micro has no scheduler updates
-        # if task_name == "macro" and isinstance(
-        #     self._scheduler.lr_scheduler, ReduceLROnPlateau
-        # ):
-
-        return all_val_metrics, should_save, new_best
-
     def _train(self, batch_size):
 
+        assert isinstance(
+            self._model, torch.nn.Module
+        ), "Before calling train, you must supply a PyTorch model using the `Trainer._set_model` method"
         self._epoch_steps += 1
         if self._epoch_steps > self._max_epochs:
             log.info(f"Max Epoch Steps {self._max_epochs} reached. Training Stopped.")
@@ -334,6 +313,17 @@ class Trainer(obejct):
             )
             targets.extend(self.datamaker.decode(definition, "definition", batch=True))
             sources.extend(self.datamaker.decode(example, "example", batch=True))
+            self._TB_train_log.add_scalar(
+                "loss", model_out.loss.item(), self._train_counter
+            )
+            current_bleu = batch_bleu(
+                targets[-current_batch_size:],
+                generations[-current_batch_size:],
+                reduction="average",
+            )
+            self._TB_train_log.add_scalar(
+                "batch_BLEU", current_bleu, self._train_counter
+            )
 
             torch.nn.utils.clip_grad_norm_(
                 self._trainable_params, self._clip_grad_norm_val
@@ -341,10 +331,30 @@ class Trainer(obejct):
             model_out.loss.backward()
             self._optimizer.step()
 
+        with open(
+            os.path.join(self._train_log_dir, f"iter_{self._epoch_steps}.json"), "w",
+        ) as f:
+            f.write(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "src": sources[i],
+                                "tgt": targets[i],
+                                "gen": generations[i],
+                            }
+                        )
+                        for i in range(len(generations))
+                    ]
+                )
+            )
         return DotMap({"src": sources, "tgt": targets, "gen": generations})
 
     def _validate(self, batch_size):
 
+        assert isinstance(
+            self._model, torch.nn.Module
+        ), "Before calling _validate, you must supply a PyTorch model using the `Trainer._set_model` method"
         valid_iterator = self._datamaker.get_iterator(
             "valid", batch_size, device=self._device
         )
@@ -452,6 +462,14 @@ class Trainer(obejct):
                     self._serialization_dir, "model", f"iter_{self._epoch_steps}.pth"
                 ),
             )
+            torch.save(
+                self._optimizer.state_dict(),
+                os.path.join(
+                    self._serialization_dir,
+                    "optimizer",
+                    f"iter_{self._epoch_steps}.pth",
+                ),
+            )
         if bleu_best:
             torch.save(
                 self._model.state_dict(),
@@ -471,8 +489,11 @@ class Trainer(obejct):
                 ),
             )
         if not bleu_patience and not ppl_patience:
-            log.info("Ran out of patience for both BLEU and perplexity")
+            log.info(
+                "Ran out of patience for both BLEU and perplexity. Stopping training"
+            )
 
+            self._patience_exceeded = True
         with open(
             os.path.join(self._validation_log_dir, f"iter_{self._epoch_steps}.json"),
             "w",
@@ -541,3 +562,8 @@ class Trainer(obejct):
             )
         else:
             raise NotImplementedError
+
+    def _set_model(self, model):
+        self._model = model
+        if self._load_model:
+            self._model.load_state_dict(torch.load(self._load_model))

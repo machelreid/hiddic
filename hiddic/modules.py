@@ -1,5 +1,6 @@
 import transformers
 from allennlp.modules.elmo import Elmo
+from transformers import AutoConfig, AutoModel
 
 __ELMO_OPTIONS__ = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json"
 __ELMO_WEIGHTS__ = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x4096_512_2048cnn_2xhighway_5.5B/elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5"
@@ -28,3 +29,8 @@ class ELMo_wrapper(nn.Module):
 sentences = [["First", "sentence", "."], ["Another", "."]]
 
 character_ids = batch_to_ids(sentences)
+
+
+def get_pretrained_transformer(path):
+    config = AutoConfig.from_pretrained(path, output_hidden_states=True)
+    return AutoModel.from_pretrained(path, config=config)

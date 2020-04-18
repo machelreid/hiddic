@@ -4,6 +4,7 @@ import numpy as np
 from nltk.tokenize import word_tokenize
 from nltk.translate.bleu_score import sentence_bleu
 import tqdm
+import os
 
 
 def get_output_attribute(out, attribute_name, cuda_device, reduction="sum"):
@@ -104,3 +105,11 @@ def batch_bleu(ref, hyp, reduction="sum"):
         raise NotImplementedError(
             f"{reduction} not in supported reductions: ['sum','average']"
         )
+
+
+def mkdir(path):
+    try:
+        os.mkdir(path)
+    except OSError as error:
+        pass
+    return path
