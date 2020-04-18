@@ -130,7 +130,10 @@ class Trainer(obejct):
 
         self._datamaker = data.DataMaker(self._data_args, self._datapath)
         self._datamaker.build_data(self._dataset)
-        self._accumulation_steps = 0
+
+        self._epoch_steps = 0
+        self._train_counter = 0
+        self._validation_counter = 0
 
         self._tgt_pad_idx = self._datamaker.vocab.defintion.stoi["<pad>"]
         self._tgt_bos_idx = self._datamaker.vocab.defintion.stoi["<sos>"]
@@ -347,12 +350,17 @@ class Trainer(obejct):
 
     def _train(self, batch_size):
 
+        self._epoch_steps += 1
+        if self._epoch_steps > self._max_epochs:
+            log.info(f"Max Epoch Steps {self._max_epochs} reached. Training Stopped.")
+            break
         train_iterator = self._datamaker.get_iterator("train", batch_size)
 
         generations = []
         targets = []
         sources = []
         for batch in train_iterator:
+            self._train_counter += 1
             self._model.zero_grad()
 
             example, example_lens = batch.example
@@ -372,6 +380,9 @@ class Trainer(obejct):
             targets.extend(self.datamaker.decode(definition, "definition", batch=True))
             sources.extend(self.datamaker.decode(example, "example", batch=True))
 
+            torch.nn.utils.clip_grad_norm_(
+                self._trainable_params, self._clip_grad_norm_val
+            )
             model_out.loss.backward()
             self._optimizer.step()
 
@@ -384,8 +395,8 @@ class Trainer(obejct):
         generations = []
         targets = []
         sources = []
-
         logits_for_ppl_calc = []
+        tgt_idxs_for_ppl_calc = []
         decode_strategy = BeamSearch(
             self.beam_size,
             batch_size,
@@ -404,6 +415,7 @@ class Trainer(obejct):
         )
 
         for i, batch in enumerate(valid_iterator):
+            self._validation_counter += 1
             self._model.zero_grad()
             self._model.eval()
 
@@ -420,20 +432,42 @@ class Trainer(obejct):
                 tgt_lens=definition_lens,
                 decode_strategy=decode_strategy,
             )
-            torch.nn.utils.clip_grad_norm_(
-                self._trainable_params, self._clip_grad_norm_val
-            )
             generations.extend(
                 self.datamaker.decode(model_out.predictions, "definition", batch=True)
             )
             targets.extend(self.datamaker.decode(definition, "definition", batch=True))
             sources.extend(self.datamaker.decode(example, "example", batch=True))
 
-            if self._max_val_iters:
+            logits_for_ppl_calc.append(model_out.logits)
+            tgt_idxs_for_ppl_calc.append(definition[:, 1:].contiguous().view(-1))
+            self._TB_validation_log.add_scalar(
+                "batch_perplexity", model_out.ppl.item(), self._validation_counter
+            )
+            current_bleu = batch_bleu(
+                targets[-batch_size:], generations[-batch_size:], reduction="average"
+            )
+            self._TB_validation_log.add_scalar(
+                "batch_BLEU", current_bleu, self._validation_counter
+            )
+            if self._max_val_data:
                 if i * batch_size > self._max_val_data:
                     break
         bleu = batch_bleu(targets, generations, reduction="average")
+        self._TB_validation_log.add_scalar(
+            "BLEU", model_out.ppl.item(), self._validation_counter
+        )
 
+        ppl = (
+            F.cross_entropy(
+                torch.cat(logits_for_ppl_calc, 0),
+                torch.cat(tgt_idxs_for_ppl_calc),
+                ignore_index=self._model.embeddings.tgt.padding_idx,
+            )
+            .exp()
+            .item()
+        )
+
+        self._TB_validation_log.add_scalar("Perplexity", ppl, self._epoch_steps)
         bleu_best, bleu_patience = self._update_metric_history(
             self.val_pass,
             all_val_metrics,

@@ -67,7 +67,7 @@ class DefinitionProbing(nn.Module):
         predictions, logits = self.decoder(target, span_representation)
 
         loss = F.cross_entropy(
-            logits.view(batch_size * tgt_len - 1),
+            logits.view(batch_size * tgt_len - 1, -1),
             target[:, 1:].view(-1),
             ignore_index=self.embeddings.tgt.padding_idx,
         )
@@ -90,8 +90,8 @@ class DefinitionProbing(nn.Module):
         _, logits = self.decoder(target, span_representation, memory_bank)
 
         loss = F.cross_entropy(
-            logits.view(batch_size * tgt_len - 1),
-            target[:, 1:].view(-1),
+            logits.view(batch_size * tgt_len - 1, -1),
+            target[:, 1:].contiguous().view(-1),
             ignore_index=self.embeddings.tgt.padding_idx,
         )
 
@@ -312,8 +312,8 @@ class LSTM_Decoder(nn.Module):
             all_preds.append(pred)
 
         # batch_size, seq_len
-        all_logits = torch.stack(all_logits, 1)
-        all_preds = torch.stack(all_preds, 1)
+        all_logits = torch.stack(all_logits, 1).contiguous()
+        all_preds = torch.stack(all_preds, 1).contiguous()
         return all_logits, all_preds
 
     def generate(self, input_id, prev_hiddens, prev_cells):
