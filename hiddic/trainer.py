@@ -436,9 +436,17 @@ class Trainer(object):
                 sources.extend(self._datamaker.decode(example, "example", batch=True))
                 words.extend(self._datamaker.decode(word, "word", batch=True))
 
-                logits_for_ppl_calc.append(model_out.logits.to("cpu"))
+                logits_for_ppl_calc.append(
+                    model_out.logits.to("cpu").detach().numpy().copy()
+                )
                 tgt_idxs_for_ppl_calc.append(
-                    definition[:, 1:].contiguous().view(-1).to("cpu")
+                    definition[:, 1:]
+                    .contiguous()
+                    .view(-1)
+                    .to("cpu")
+                    .detach()
+                    .numpy()
+                    .copy()
                 )
                 self._TB_validation_log.add_scalar(
                     "batch_perplexity",
@@ -477,8 +485,8 @@ class Trainer(object):
 
         ppl = (
             F.cross_entropy(
-                torch.cat(logits_for_ppl_calc, 0),
-                torch.cat(tgt_idxs_for_ppl_calc),
+                torch.cat([torch.from_numpy(l) for l in logits_for_ppl_calc], 0),
+                torch.cat([torch.from_numpy(t) for t in tgt_idxs_for_ppl_calc]),
                 ignore_index=self._model.embeddings.tgt.padding_idx,
             )
             .exp()
