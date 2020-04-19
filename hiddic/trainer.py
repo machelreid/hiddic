@@ -9,11 +9,12 @@ from utils import batch_bleu
 import os
 import logging
 from utils import mkdir
+from dotmap import DotMap
+import tqdm
+import json
 
 
-def build_trainer(
-    model, args, datamaker,
-):
+def build_trainer(model, args, datamaker, phase="train"):
     if phase not in ["train"]:
         raise NotImplementedError(
             "PRETRAIN and TUNE modes to be implemented, only TRAIN mode is supported"
@@ -27,16 +28,17 @@ def build_trainer(
         # max_vals=50,
         device="cuda",
         clip_grad_norm_val=args.clip,
-        initial_lr=args.lr,
+        initial_lr=args.initial_lr,
+        lr_decay=None,
         min_lr=args.min_lr,
-        lr_patience=None,
+        lr_patience=args.lr_patience,
         keep_all_checkpoints=args.keep_all_checkpoints,
         val_data_limit=args.val_data_limit,
         max_epochs=args.max_epochs,
         training_data_fraction=args.training_data_fraction,
         beam_size=args.beam_size,
         min_length=args.min_length,
-        max_length=args.max_lengh,
+        max_length=args.max_length,
         n_best=1,
         ratio=None,
         datamaker=datamaker,
@@ -52,7 +54,7 @@ def build_trainer(
 log = logging.getLogger()
 
 
-class Trainer(obejct):
+class Trainer(object):
     def __init__(
         self,
         model,
@@ -123,22 +125,19 @@ class Trainer(obejct):
             self._model.load_state_dict(torch.load(self._load_model))
 
         self._patience = patience
-        self._val_interval = val_interval
         self._serialization_dir = serialization_dir
         self._device = device
-        self._clip_grad_norm_val = clip_gram_norm_val
+        self._clip_grad_norm_val = clip_grad_norm_val
         self._lr_decay = lr_decay
         self._min_lr = min_lr
+        self._lr_patience = lr_patience
         self._keep_all_checkpoints = keep_all_checkpoints
-        self._val_data_limit = val_data_limit
         self._max_epochs = max_epochs
         self._training_data_fraction = training_data_fraction
-        self._datapath = datapath
-        self._data_args = data_args
-        self._dataset = dataset
         self._initial_lr = initial_lr
         self._lr_scheduling_metric = lr_scheduling_metric
         self._metric_decreases = metric_decreases
+        self._val_data_limit = val_data_limit
 
         self._metric_infos = {}
         self._patience_exceeded = False
@@ -174,10 +173,10 @@ class Trainer(obejct):
         self._train_counter = 0
         self._validation_counter = 0
 
-        self._tgt_pad_idx = self._datamaker.vocab.defintion.stoi["<pad>"]
-        self._tgt_bos_idx = self._datamaker.vocab.defintion.stoi["<sos>"]
-        self._tgt_eos_idx = self._datamaker.vocab.defintion.stoi["<eos>"]
-        self._tgt_unk_idx = self._datamaker.vocab.defintion.stoi["<unk>"]
+        self._tgt_pad_idx = self._datamaker.vocab.definition.stoi["<pad>"]
+        self._tgt_bos_idx = self._datamaker.vocab.definition.stoi["<sos>"]
+        self._tgt_eos_idx = self._datamaker.vocab.definition.stoi["<eos>"]
+        self._tgt_unk_idx = self._datamaker.vocab.definition.stoi["<unk>"]
         self._exclusion_idxs = {self._tgt_unk_idx, self._tgt_pad_idx, self._tgt_bos_idx}
 
         self._TB_dir = None
@@ -278,7 +277,7 @@ class Trainer(obejct):
         if self._epoch_steps > self._max_epochs:
             log.info(f"Max Epoch Steps {self._max_epochs} reached. Training Stopped.")
             return
-        elif self._patience_exceeded:
+        if self._patience_exceeded:
             log.info(
                 f"Patience has already been exceeded for every metric. In other words, I've become IMPATIENT. Training Stopped."
             )
@@ -291,13 +290,18 @@ class Trainer(obejct):
         generations = []
         targets = []
         sources = []
-        for batch in train_iterator:
+        words = []
+        for batch in tqdm.tqdm(
+            train_iterator, desc=f"Training (Epoch {self._epoch_steps}): "
+        ):
             self._train_counter += 1
             self._model.zero_grad()
 
             example, example_lens = batch.example
             definition, definition_lens = batch.definition
             word, word_lens = batch.word
+
+            current_batch_size = word.shape[0]
 
             model_out = self._forward(
                 "train",
@@ -311,6 +315,8 @@ class Trainer(obejct):
             )
             targets.extend(self._datamaker.decode(definition, "definition", batch=True))
             sources.extend(self._datamaker.decode(example, "example", batch=True))
+            words.extend(self._datamaker.decode(word, "word", batch=True))
+
             self._TB_train_log.add_scalar(
                 "loss", model_out.loss.item(), self._train_counter
             )
@@ -340,6 +346,7 @@ class Trainer(obejct):
                                 "src": sources[i],
                                 "tgt": targets[i],
                                 "gen": generations[i],
+                                "word": words[i],
                             }
                         )
                         for i in range(len(generations))
@@ -360,26 +367,11 @@ class Trainer(obejct):
         generations = []
         targets = []
         sources = []
+        words = []
         logits_for_ppl_calc = []
         tgt_idxs_for_ppl_calc = []
-        decode_strategy = BeamSearch(
-            self.beam_size,
-            batch_size,
-            pad=self._tgt_pad_idx,
-            bos=self._tgt_bos_idx,
-            eos=self._tgt_eos_idx,
-            n_best=1 if self._n_best is None else self._n_best,
-            global_scorer=self._model.global_scorer,
-            min_length=self._min_length,
-            max_length=self._max_length,
-            return_attention=False,
-            block_ngram_repeat=3,
-            exclusion_tokens=self._exclusion_idxs,
-            stepwise_penalty=None,
-            ratio=self.ratio,
-        )
 
-        for i, batch in enumerate(valid_iterator):
+        for i, batch in tqdm.tqdm(enumerate(valid_iterator)):
             self._validation_counter += 1
             self._model.zero_grad()
             self._model.eval()
@@ -389,25 +381,50 @@ class Trainer(obejct):
             word, word_lens = batch.word
 
             current_batch_size = word.shape[0]
-            model_out = self._forward(
-                "valid",
-                input_ids=example,
-                seq_lens=example_lens,
-                span_ids=word,
-                target=definition,
-                tgt_lens=definition_lens,
-                decode_strategy=decode_strategy,
+
+            decode_strategy = BeamSearch(
+                self._beam_size,
+                batch_size,
+                pad=self._tgt_pad_idx,
+                bos=self._tgt_bos_idx,
+                eos=self._tgt_eos_idx,
+                n_best=1 if self._n_best is None else self._n_best,
+                global_scorer=self._model.global_scorer,
+                min_length=self._min_length,
+                max_length=self._max_length,
+                return_attention=False,
+                block_ngram_repeat=3,
+                exclusion_tokens=self._exclusion_idxs,
+                stepwise_penalty=None,
+                ratio=self._ratio if self._ratio is not None else 0,
             )
+            with torch.no_grad():
+                model_out = self._forward(
+                    "valid",
+                    input_ids=example,
+                    seq_lens=example_lens,
+                    span_ids=word,
+                    target=definition,
+                    tgt_lens=definition_lens,
+                    decode_strategy=decode_strategy,
+                )
+
             generations.extend(
-                self._datamaker.decode(model_out.predictions, "definition", batch=True)
+                [
+                    self._datamaker.decode(gen[0], "definition", batch=False)
+                    for gen in model_out.predictions
+                ]
             )
             targets.extend(self._datamaker.decode(definition, "definition", batch=True))
             sources.extend(self._datamaker.decode(example, "example", batch=True))
+            words.extend(self._datamaker.decode(word, "word", batch=True))
 
             logits_for_ppl_calc.append(model_out.logits)
             tgt_idxs_for_ppl_calc.append(definition[:, 1:].contiguous().view(-1))
             self._TB_validation_log.add_scalar(
-                "batch_perplexity", model_out.ppl.item(), self._validation_counter
+                "batch_perplexity",
+                model_out.perplexity.item(),
+                self._validation_counter,
             )
 
             current_bleu = batch_bleu(
@@ -419,12 +436,12 @@ class Trainer(obejct):
                 "batch_BLEU", current_bleu, self._validation_counter
             )
 
-            if self._max_val_data:
-                if i * batch_size > self._max_val_data:
+            if self._val_data_limit:
+                if i * batch_size > self._val_data_limit:
                     break
         bleu = batch_bleu(targets, generations, reduction="average")
         self._TB_validation_log.add_scalar(
-            "BLEU", model_out.ppl.item(), self._epoch_steps
+            "BLEU", model_out.perplexity.item(), self._epoch_steps
         )
 
         ppl = (
@@ -507,6 +524,7 @@ class Trainer(obejct):
                                 "src": sources[i],
                                 "tgt": targets[i],
                                 "gen": generations[i],
+                                "word": words[i],
                             }
                         )
                         for i in range(len(generations))

@@ -11,7 +11,8 @@ from utils import sequence_mask, find_subtensor
 from dotmap import DotMap
 import random
 from beam import BeamSearch
-import onmt.modules.GlobalAttention as AttentionLayer
+from onmt.modules import GlobalAttention
+from onmt.translate import GNMTGlobalScorer
 
 
 class DefinitionProbing(nn.Module):
@@ -27,6 +28,7 @@ class DefinitionProbing(nn.Module):
     ):
         super(DefinitionProbing, self).__init__()
 
+        self.embeddings = embeddings
         self.encoder_hidden = encoder_hidden
         self.encoder = encoder
         self.src_pad_idx = src_pad_idx
@@ -38,7 +40,7 @@ class DefinitionProbing(nn.Module):
         self.span_extractor = SelfAttentiveSpanExtractor(self.encoder_hidden)
         self.decoder = LSTM_Decoder(
             embeddings.tgt,
-            hidden=decoder,
+            hidden=decoder_hidden,
             encoder_hidden=encoder.config.hidden_size,
             num_layers=2,
             teacher_forcing_p=0.3,
@@ -47,7 +49,7 @@ class DefinitionProbing(nn.Module):
         )
         self.scalar_mix = ScalarMix(self.max_layer + 1)
         self.global_scorer = GNMTGlobalScorer(
-            alpha=None, beta=None, length_penalty="average", coverage_penalty=None
+            alpha=None, beta=None, length_penalty="avg", coverage_penalty=None
         )
 
     def forward(self, input, seq_lens, span_token_ids, target):
@@ -67,12 +69,12 @@ class DefinitionProbing(nn.Module):
         predictions, logits = self.decoder(target, span_representation)
 
         loss = F.cross_entropy(
-            logits.view(batch_size * tgt_len - 1, -1),
-            target[:, 1:].view(-1),
+            logits.view(batch_size * (tgt_len - 1), -1),
+            target[:, 1:].contiguous().view(-1),
             ignore_index=self.embeddings.tgt.padding_idx,
         )
 
-        return DotMap({"predicitions": predictions, "logits": logits, "loss": loss})
+        return DotMap({"predictions": predictions, "logits": logits, "loss": loss})
 
     def _validate(
         self, input, seq_lens, span_token_ids, target, tgt_lens, decode_strategy
@@ -84,31 +86,37 @@ class DefinitionProbing(nn.Module):
             input, attention_mask=sequence_mask(seq_lens)
         )
 
-        span_ids = self._id_extractor(tokens=npan_token_ids, batch=input, lens=seq_lens)
+        span_ids = self._id_extractor(tokens=span_token_ids, batch=input, lens=seq_lens)
+
+        span_representation = self._span_aggregator(
+            all_hidden_layers, sequence_mask(seq_lens), span_ids
+        )
 
         memory_bank = last_hidden_layer if self.decoder.attention else None
         _, logits = self.decoder(target, span_representation, memory_bank)
 
         loss = F.cross_entropy(
-            logits.view(batch_size * tgt_len - 1, -1),
+            logits.view(batch_size * (tgt_len - 1), -1),
             target[:, 1:].contiguous().view(-1),
             ignore_index=self.embeddings.tgt.padding_idx,
         )
 
         ppl = loss.exp()
         beam_results = self._strategic_decode(
-            target, tgt_lens, decode_strategy, span_representation
+            target, tgt_lens, decode_strategy, memory_bank, span_representation
         )
         return DotMap(
             {
                 "predictions": beam_results["predictions"],
-                "logits": logits.view(batch_size * tgt_len - 1, -1),
+                "logits": logits.view(batch_size * (tgt_len - 1), -1),
                 "loss": loss,
                 "perplexity": ppl,
             }
         )
 
-    def _strategic_decode(self, target, tgt_lens, decode_strategy, span_representation):
+    def _strategic_decode(
+        self, target, tgt_lens, decode_strategy, memory_bank, span_representation
+    ):
         """Translate a batch of sentences step by step using cache.
         Args:
             batch: a batch of sentences, yield by data iterator.
@@ -123,11 +131,8 @@ class DefinitionProbing(nn.Module):
         # (0) Prep the components of the search.
         # use_src_map = self.copy_attn
         batch_size, max_len = target.shape
-
-        memory_bank = last_hidden_layer if self.decoder.attention else None
-
         # Initialize the hidden states
-        self.model.decoder.init_state(span_representation)
+        self.decoder.init_state(span_representation)
 
         results = {
             "predictions": None,
@@ -141,18 +146,18 @@ class DefinitionProbing(nn.Module):
         # (2) prep decode_strategy. Possibly repeat src objects.
         src_map = None  # batch.src_map if use_src_map else None
         fn_map_state, memory_bank, memory_lengths, src_map = decode_strategy.initialize(
-            memory_bank, tgt_lens, src_map
+            memory_bank, tgt_lens, src_map, device="cuda"
         )
         if fn_map_state is not None:
-            self.model.decoder.map_state(fn_map_state)
+            self.decoder.map_state(fn_map_state)
 
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
-            decoder_input = decode_strategy.current_predictions.view(1, -1, 1)
+            decoder_input = decode_strategy.current_predictions
 
             logits, attn = self.decoder.generate(decoder_input)
 
-            decode_strategy.advance(F.log_softmax(log_probs, 1), attn)
+            decode_strategy.advance(F.log_softmax(logits, 1), attn)
             any_finished = decode_strategy.is_finished.any()
             if any_finished:
                 decode_strategy.update_finished()
@@ -177,19 +182,19 @@ class DefinitionProbing(nn.Module):
                     src_map = src_map.index_select(1, select_indices)
 
             if parallel_paths > 1 or any_finished:
-                self.model.decoder.map_state(
+                self.decoder.map_state(
                     lambda state, dim: state.index_select(dim, select_indices)
                 )
 
         results["scores"] = decode_strategy.scores
         results["predictions"] = decode_strategy.predictions
         results["attention"] = decode_strategy.attention
-        if self.report_align:
-            results["alignment"] = self._align_forward(
-                batch, decode_strategy.predictions
-            )
-        else:
-            results["alignment"] = [[] for _ in range(batch_size)]
+        # if self.decoder.attention:
+        #    results["alignment"] = self._align_forward(
+        #        batch, decode_strategy.predictions
+        #    )
+        # else:
+        #    results["alignment"] = [[] for _ in range(batch_size)]
         return results
 
     def _span_aggregator(
@@ -277,6 +282,7 @@ class LSTM_Decoder(nn.Module):
             "hidden": [None] * self.num_layers,
             "cell": [None] * self.num_layers,
         }
+        self.attention = attention
         if attention is not None:
             self.enc_hidden_att_komp = nn.Linear(encoder_hidden, hidden)
             self.attention = AttentionLayer(
@@ -303,9 +309,7 @@ class LSTM_Decoder(nn.Module):
                 if (p <= self.teacher_forcing_p and all_preds and self.training)
                 else input_ids[:, i]
             )
-            logits, prev_hiddens, prev_cells, attn = self.generate(
-                input_id, prev_hiddens, prev_cells
-            )
+            logits, attn = self.generate(input_id)
             all_logits.append(logits)
 
             pred = torch.argmax(F.softmax(logits, 1), 1)
@@ -314,9 +318,9 @@ class LSTM_Decoder(nn.Module):
         # batch_size, seq_len
         all_logits = torch.stack(all_logits, 1).contiguous()
         all_preds = torch.stack(all_preds, 1).contiguous()
-        return all_logits, all_preds
+        return all_preds, all_logits
 
-    def generate(self, input_id, prev_hiddens, prev_cells):
+    def generate(self, input_id):
         input = self.embedding_dropout(self.embeddings(input_id))
         for i, rnn in enumerate(self.lstm_decoder):
             # recurrent cell

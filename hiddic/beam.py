@@ -117,6 +117,7 @@ class BeamSearch(DecodeStrategy):
         def fn_map_state(state, dim):
             return tile(state, self.beam_size, dim=dim)
 
+        mb_device = "cuda"
         if memory_bank is None:
             memory_bank = None
         elif isinstance(memory_bank, tuple):

@@ -5,7 +5,7 @@ from torchtext import data
 from nltk.tokenize import word_tokenize
 from dotmap import DotMap
 from utils import removeDuplicates, elmo_batch_to_ids
-from transformers import BertTokenizer, GPT2Tokenizer, RobertaTokenizer
+from transformers import BertTokenizer, GPT2Tokenizer, RobertaTokenizer, AutoTokenizer
 from collections import defaultdict, Counter
 import os
 import torch
@@ -229,12 +229,18 @@ _roberta_tokenizer = get_huggingface_tokenizer(RobertaTokenizer, "roberta-base")
 
 
 def get_dm_conf(_type, field_name):
-    if _type in ["elmo", "normal"]:
+    if _type is None:
+        _type = "normal"
+    if _type in [
+        "elmo",
+        "normal",
+    ]:
         conf = cp(dm_conf[_type])
         conf["field"] = conf["name"] = field_name
+        return conf
     else:
         try:
-            conf = cp(dm_conf.transformers)
+            conf = cp(dm_conf.transformer_base)
             tokenizer = AutoTokenizer.from_pretrained(_type)
             conf["tokenizer"] = tokenizer
             conf["tokenize"] = tokenizer.encode

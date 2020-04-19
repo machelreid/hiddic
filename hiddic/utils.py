@@ -2,9 +2,11 @@ from allennlp.modules.elmo import batch_to_ids
 import torch
 import numpy as np
 from nltk.tokenize import word_tokenize
-from nltk.translate.bleu_score import sentence_bleu
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import tqdm
 import os
+
+cc = SmoothingFunction()
 
 
 def get_output_attribute(out, attribute_name, cuda_device, reduction="sum"):
@@ -66,11 +68,12 @@ def elmo_batch_to_ids(_str):
     return [i.tolist() for i in batch_to_ids(batch)[0]]
 
 
-def find_subtensor(sl, l):
+def find_subtensor(sl, l, device="cuda"):
+    sl = sl.to(device)
     sll = len(sl)
     for ind in (i for i, e in enumerate(l) if e == sl[0]):
         if False not in (l[ind : ind + sll] == sl):
-            return torch.tensor([ind, ind + sll - 1])
+            return torch.tensor([ind, ind + sll - 1]).to(device)
 
 
 def batch_bleu(ref, hyp, reduction="sum"):
@@ -79,17 +82,30 @@ def batch_bleu(ref, hyp, reduction="sum"):
 
     """
 
-    def check_bleu(r, h, ngrams=4):
+    def check_bleu(r, h, smooth=False, ngrams=None):
         """
         If the BLEU Score is goes to zero (no ngram matches),  decreases ngrams by 1
         """
-        temp = sentence_bleu(
-            [word_tokenize(r)], word_tokenize(h), weights=[1 / ngrams] * ngrams
-        )
+        if ngrams is None:
+            temp = sentence_bleu(
+                [word_tokenize(r)], word_tokenize(h), auto_reweigh=True
+            )
+        else:
+            temp = sentence_bleu(
+                [word_tokenize(r)], word_tokenize(h), weights=[1 / ngrams] * ngrams
+            )
+        if smooth == True:
+            return sentence_bleu(
+                [word_tokenize(r)],
+                word_tokenize(h),
+                auto_reweigh=True,
+                smoothing_function=cc.method4,
+            )
+
         if temp >= 0.0001:
             return temp
         else:
-            return check_bleu(r, h, ngrams=ngrams - 1)
+            return check_bleu(r, h, smooth=True)
 
     total_score = 0
     assert len(ref) == len(hyp)

@@ -1,31 +1,37 @@
 patience: 5
 serialization_dir: /home/machelreid/results/hiddic/
-device:"cuda"
+device: cuda
 clip: 5
-initial_lr: 0.003,
-min_lr: 0,
-lr_patience: 4,
-keep_all_checkpoints true:
-val_data_limit: null,
-max_epochs: 100,
-training_data_fraction: null,
-beam_size: 7,
-min_length: 2,
-max_length: 50,
-n_best:1,
-ratio:None,
-lr_scheduling_metric: perplexity,
-metric_decreases: true,
-load_model: null,
-load_optimizer: null,
+initial_lr: 0.003
+min_lr: 0
+lr_patience: 4
+keep_all_checkpoints: true
+val_data_limit: null
+max_epochs: 100
+training_data_fraction: null
+beam_size: 7
+min_length: 2
+max_length: 50
+n_best: 1
+ratio: null
+lr_scheduling_metric: perplexity
+metric_decreases: true
+
+load_model: null
+load_optimizer: null
+
 encoder: bert-base-uncased
+encoder_hidden: null
+max_layer: 12
+
 decoder: lstm
 decoder_embedding_dim: 300
-max_layer: 12
-encoder_hidden: null
 decoder_hidden: 512
 
 datapath: /home/machelreid/data/hiddic/
 dataset: null
 
 seed: 13
+
+train_batch_size: 64
+valid_batch_size: 40
