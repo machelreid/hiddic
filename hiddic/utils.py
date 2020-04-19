@@ -110,7 +110,9 @@ def batch_bleu(ref, hyp, reduction="sum"):
     total_score = 0
     assert len(ref) == len(hyp)
 
-    for _ref, _hyp in tqdm.tqdm(zip(ref, hyp), desc="Calculating BLEU: "):
+    for _ref, _hyp in tqdm.tqdm(
+        zip(ref, hyp), desc="Calculating BLEU: ", total=len(ref)
+    ):
         total_score += check_bleu(_ref, _hyp)
 
     if reduction == "sum":

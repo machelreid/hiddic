@@ -51,7 +51,14 @@ def build_trainer(model, args, datamaker, phase="train"):
     return trainer
 
 
-log = logging.getLogger()
+logging.basicConfig(
+    filename="app.log",
+    filemode="w",
+    format="%(name)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG,
+)
+
+log = logging
 
 
 class Trainer(object):
@@ -192,6 +199,8 @@ class Trainer(object):
             self._validation_log_dir = mkdir(
                 os.path.join(self._serialization_dir, "valid")
             )
+            mkdir(os.path.join(self._serialization_dir, "model"))
+            mkdir(os.path.join(self._serialization_dir, "optimizer"))
             self._train_log_dir = mkdir(os.path.join(self._serialization_dir, "train"))
 
     def _check_metric_history(
@@ -251,18 +260,19 @@ class Trainer(object):
         """
 
         metric_exists = self._metric_infos.get(metric)
-        if not metric_exists:
+        if metric_exists is None:
             self._metric_infos[metric] = {}
-        metric_history = self._metric_infos[metric].get(["hist"])
+        metric_history = self._metric_infos[metric].get("hist")
         if metric_history is None:
             self._metric_infos[metric]["hist"] = []
+            metric_history = self._metric_infos[metric]["hist"]
         metric_history.append(current_value)
-        is_best_so_far, out_of_patience = self._check_history(
+        is_best_so_far, out_of_patience = self._check_metric_history(
             metric_history, current_value, metric_decreases
         )
         if is_best_so_far:
-            log.info("Best result seen so far for %s.", task_name)
-            self._metric_infos[metric]["best"] = (val_pass, all_val_metrics)
+            log.info("Best result seen so far for %s.", metric)
+            self._metric_infos[metric]["best"] = (val_pass, current_value)
             should_save = True
         if out_of_patience:
             self._metric_infos[metric]["stopped"] = True
@@ -291,8 +301,8 @@ class Trainer(object):
         targets = []
         sources = []
         words = []
-        for batch in tqdm.tqdm(
-            train_iterator, desc=f"Training (Epoch {self._epoch_steps}): "
+        for i, batch in enumerate(
+            tqdm.tqdm(train_iterator, desc=f"Training (Epoch {self._epoch_steps}): ")
         ):
             self._train_counter += 1
             self._model.zero_grad()
@@ -371,7 +381,9 @@ class Trainer(object):
         logits_for_ppl_calc = []
         tgt_idxs_for_ppl_calc = []
 
-        for i, batch in tqdm.tqdm(enumerate(valid_iterator)):
+        for i, batch in enumerate(
+            tqdm.tqdm(valid_iterator, desc=f"Validating (Epoch {self._epoch_steps}): ")
+        ):
             self._validation_counter += 1
             self._model.zero_grad()
             self._model.eval()
@@ -384,7 +396,7 @@ class Trainer(object):
 
             decode_strategy = BeamSearch(
                 self._beam_size,
-                batch_size,
+                current_batch_size,
                 pad=self._tgt_pad_idx,
                 bos=self._tgt_bos_idx,
                 eos=self._tgt_eos_idx,
@@ -506,7 +518,7 @@ class Trainer(object):
                     f"PPL_BEST_{self._epoch_steps}.pth",
                 ),
             )
-        if not bleu_patience and not ppl_patience:
+        if bleu_patience and ppl_patience:
             log.info(
                 "Ran out of patience for both BLEU and perplexity. Stopping training"
             )
@@ -543,7 +555,9 @@ class Trainer(object):
 
         self._scheduler.step(lr_scheduling_metric)
         log.info(
-            "\tBest result seen so far for %s: %.3f", metric, self._scheduler.best,
+            "\tBest result seen so far for %s: %.3f",
+            self._lr_scheduling_metric,
+            self._scheduler.best,
         )
         log.info(
             "\t# validation passes without improvement: %d",
