@@ -320,6 +320,7 @@ class Trainer(object):
                 span_ids=word,
                 target=definition,
             )
+            torch.cuda.empty_cache()
             generations.extend(
                 self._datamaker.decode(model_out.predictions, "definition", batch=True)
             )
@@ -384,77 +385,95 @@ class Trainer(object):
         for i, batch in enumerate(
             tqdm.tqdm(valid_iterator, desc=f"Validating (Epoch {self._epoch_steps}): ")
         ):
-            self._validation_counter += 1
-            self._model.zero_grad()
-            self._model.eval()
+            try:
+                self._validation_counter += 1
+                self._model.zero_grad()
+                self._model.eval()
 
-            example, example_lens = batch.example
-            definition, definition_lens = batch.definition
-            word, word_lens = batch.word
+                example, example_lens = batch.example
+                definition, definition_lens = batch.definition
+                word, word_lens = batch.word
 
-            current_batch_size = word.shape[0]
+                current_batch_size = word.shape[0]
 
-            decode_strategy = BeamSearch(
-                self._beam_size,
-                current_batch_size,
-                pad=self._tgt_pad_idx,
-                bos=self._tgt_bos_idx,
-                eos=self._tgt_eos_idx,
-                n_best=1 if self._n_best is None else self._n_best,
-                global_scorer=self._model.global_scorer,
-                min_length=self._min_length,
-                max_length=self._max_length,
-                return_attention=False,
-                block_ngram_repeat=3,
-                exclusion_tokens=self._exclusion_idxs,
-                stepwise_penalty=None,
-                ratio=self._ratio if self._ratio is not None else 0,
-            )
-            with torch.no_grad():
-                model_out = self._forward(
-                    "valid",
-                    input_ids=example,
-                    seq_lens=example_lens,
-                    span_ids=word,
-                    target=definition,
-                    tgt_lens=definition_lens,
-                    decode_strategy=decode_strategy,
+                decode_strategy = BeamSearch(
+                    self._beam_size,
+                    current_batch_size,
+                    pad=self._tgt_pad_idx,
+                    bos=self._tgt_bos_idx,
+                    eos=self._tgt_eos_idx,
+                    n_best=1 if self._n_best is None else self._n_best,
+                    global_scorer=self._model.global_scorer,
+                    min_length=self._min_length,
+                    max_length=self._max_length,
+                    return_attention=False,
+                    block_ngram_repeat=3,
+                    exclusion_tokens=self._exclusion_idxs,
+                    stepwise_penalty=None,
+                    ratio=self._ratio if self._ratio is not None else 0,
+                )
+                with torch.no_grad():
+                    model_out = self._forward(
+                        "valid",
+                        input_ids=example,
+                        seq_lens=example_lens,
+                        span_ids=word,
+                        target=definition,
+                        tgt_lens=definition_lens,
+                        decode_strategy=decode_strategy,
+                    )
+                torch.cuda.empty_cache()
+
+                generations.extend(
+                    [
+                        self._datamaker.decode(gen[0], "definition", batch=False)
+                        for gen in model_out.predictions
+                    ]
+                )
+                targets.extend(
+                    self._datamaker.decode(definition, "definition", batch=True)
+                )
+                sources.extend(self._datamaker.decode(example, "example", batch=True))
+                words.extend(self._datamaker.decode(word, "word", batch=True))
+
+                logits_for_ppl_calc.append(model_out.logits.to("cpu"))
+                tgt_idxs_for_ppl_calc.append(
+                    definition[:, 1:].contiguous().view(-1).to("cpu")
+                )
+                self._TB_validation_log.add_scalar(
+                    "batch_perplexity",
+                    model_out.perplexity.item(),
+                    self._validation_counter,
                 )
 
-            generations.extend(
-                [
-                    self._datamaker.decode(gen[0], "definition", batch=False)
-                    for gen in model_out.predictions
-                ]
-            )
-            targets.extend(self._datamaker.decode(definition, "definition", batch=True))
-            sources.extend(self._datamaker.decode(example, "example", batch=True))
-            words.extend(self._datamaker.decode(word, "word", batch=True))
+                current_bleu = batch_bleu(
+                    targets[-current_batch_size:],
+                    generations[-current_batch_size:],
+                    reduction="average",
+                )
+                self._TB_validation_log.add_scalar(
+                    "batch_BLEU", current_bleu, self._validation_counter
+                )
 
-            logits_for_ppl_calc.append(model_out.logits)
-            tgt_idxs_for_ppl_calc.append(definition[:, 1:].contiguous().view(-1))
-            self._TB_validation_log.add_scalar(
-                "batch_perplexity",
-                model_out.perplexity.item(),
-                self._validation_counter,
-            )
+                if self._val_data_limit:
+                    if i * batch_size > self._val_data_limit:
+                        break
+            except RuntimeError as e:
+                # catch out of memory exceptions during fwd/bck (skip batch)
+                if "out of memory" in str(e):
+                    log.warning(
+                        "| WARNING: ran out of memory, skipping batch. "
+                        "if this happens frequently, decrease batch_size or "
+                        "truncate the inputs to the model."
+                    )
+                    continue
+                else:
+                    raise e
 
-            current_bleu = batch_bleu(
-                targets[-current_batch_size:],
-                generations[-current_batch_size:],
-                reduction="average",
-            )
-            self._TB_validation_log.add_scalar(
-                "batch_BLEU", current_bleu, self._validation_counter
-            )
+        torch.cuda.empty_cache()
 
-            if self._val_data_limit:
-                if i * batch_size > self._val_data_limit:
-                    break
         bleu = batch_bleu(targets, generations, reduction="average")
-        self._TB_validation_log.add_scalar(
-            "BLEU", model_out.perplexity.item(), self._epoch_steps
-        )
+        self._TB_validation_log.add_scalar("BLEU", bleu, self._epoch_steps)
 
         ppl = (
             F.cross_entropy(

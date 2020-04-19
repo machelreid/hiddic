@@ -28,6 +28,9 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
+    config.update(
+        {"serialization_dir": config.serialization_dir + "/" + config.dataset}
+    )
     ############### DATA ###############
     datamaker = DataMaker(data_fields, config.datapath)
     datamaker.build_data(config.dataset)
@@ -62,6 +65,8 @@ if __name__ == "__main__":
 
     for i in range(config.max_epochs):
         train_out = trainer._train(config.train_batch_size)
+        if train_out is None:
+            break
         valid_out = trainer._validate(config.valid_batch_size)
     ####################################
     ####################################

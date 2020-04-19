@@ -114,6 +114,7 @@ class DataMaker(object):
             )
         seperate_fields = removeDuplicates([_fields[i][1] for i in _fields])
 
+        print("Loading", dataset_name)
         self.train, self.valid, self.test = data.TabularDataset.splits(
             path=os.path.join(self.dataset_path, dataset_name),
             train="_train.json",

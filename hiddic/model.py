@@ -223,14 +223,14 @@ class DefinitionProbing(nn.Module):
 
         output_indices = []
         for i in range(batch.shape[0]):
-            tensor = torch.tensor(find_subtensor(output_ids[i], batch[i]))
+            tensor = find_subtensor(output_ids[i], batch[i])
             if tensor is None:
                 try:
-                    tensor = torch.tensor(find_subtensor(output_ids[i][:-1], batch[i]))
+                    tensor = find_subtensor(output_ids[i][:-1], batch[i])
                 except IndexError:
-                    tensor = torch.tensor([1, lens[i].item() - 1])
+                    tensor = torch.tensor([1, lens[i].item() - 1]).to("cuda")
                 if tensor is None:
-                    tensor = torch.tensor([1, lens[i].item() - 1])
+                    tensor = torch.tensor([1, lens[i].item() - 1]).to("cuda")
             output_indices.append(tensor)
         return torch.stack(output_indices).unsqueeze(1)
 
