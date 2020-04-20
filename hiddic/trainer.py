@@ -12,6 +12,7 @@ from utils import mkdir
 from dotmap import DotMap
 import tqdm
 import json
+import sacrebleu
 
 
 def build_trainer(model, args, datamaker, phase="train"):
@@ -346,6 +347,9 @@ class Trainer(object):
             model_out.loss.backward()
             self._optimizer.step()
 
+        bleu = batch_bleu(targets, generations, reduction="average")
+        self._TB_train_log.add_scalar("BLEU", bleu, self._epoch_steps)
+
         with open(
             os.path.join(self._train_log_dir, f"iter_{self._epoch_steps}.json"), "w",
         ) as f:
@@ -381,6 +385,9 @@ class Trainer(object):
         words = []
         logits_for_ppl_calc = []
         tgt_idxs_for_ppl_calc = []
+
+        # ppl = (total_perplexity_sum, num_examples)
+        ppl = [0, 0]
 
         for i, batch in enumerate(
             tqdm.tqdm(valid_iterator, desc=f"Validating (Epoch {self._epoch_steps}): ")
@@ -436,18 +443,17 @@ class Trainer(object):
                 sources.extend(self._datamaker.decode(example, "example", batch=True))
                 words.extend(self._datamaker.decode(word, "word", batch=True))
 
-                logits_for_ppl_calc.append(
-                    model_out.logits.to("cpu").detach().numpy().copy()
+                # perplexity values
+                ppl[0] += F.cross_entropy(
+                    model_out.logits,
+                    definition[:, 1:].contiguous().view(-1),
+                    ignore_index=self._model.embeddings.tgt.padding_idx,
+                    reduction="sum",
                 )
-                tgt_idxs_for_ppl_calc.append(
-                    definition[:, 1:]
-                    .contiguous()
-                    .view(-1)
-                    .to("cpu")
-                    .detach()
-                    .numpy()
-                    .copy()
-                )
+
+                # perplexity length
+                ppl[1] += definition.shape[0] * (definition.shape[1] - 1)
+
                 self._TB_validation_log.add_scalar(
                     "batch_perplexity",
                     model_out.perplexity.item(),
@@ -483,15 +489,9 @@ class Trainer(object):
         bleu = batch_bleu(targets, generations, reduction="average")
         self._TB_validation_log.add_scalar("BLEU", bleu, self._epoch_steps)
 
-        ppl = (
-            F.cross_entropy(
-                torch.cat([torch.from_numpy(l) for l in logits_for_ppl_calc], 0),
-                torch.cat([torch.from_numpy(t) for t in tgt_idxs_for_ppl_calc]),
-                ignore_index=self._model.embeddings.tgt.padding_idx,
-            )
-            .exp()
-            .item()
-        )
+        ppl = (ppl[0] / ppl[1]).exp().item()
+
+        # Had to do this for memory issues
 
         self._TB_validation_log.add_scalar("Perplexity", ppl, self._epoch_steps)
 

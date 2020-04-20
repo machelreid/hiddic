@@ -1,7 +1,7 @@
 from allennlp.modules.elmo import batch_to_ids
 import torch
 import numpy as np
-from nltk.tokenize import word_tokenize
+from sacrebleu import corpus_bleu as bleu
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import tqdm
 import os
@@ -76,36 +76,36 @@ def find_subtensor(sl, l, device="cuda"):
             return torch.tensor([ind, ind + sll - 1]).to(device)
 
 
-def batch_bleu(ref, hyp, reduction="sum"):
+def batch_bleu(ref, hyp, reduction="average"):
     """
     Calculates bleu score for a batch,
 
     """
 
-    def check_bleu(r, h, smooth=False, ngrams=None):
+    def check_bleu(r, h, smooth=None, auto_reweigh=False):
         """
-        If the BLEU Score is goes to zero (no ngram matches),  decreases ngrams by 1
+        Uses equivalent of MOSES's `multi-bleu.pl` script using the sacrebleu library (https://www.aclweb.org/anthology/W18-6319)
+
+        If ngrams < 4, uses Smoothing Function 4, as shown in A "Systematic Comparison of Smoothing Techniques for Sentence-Level BLEU" (Chen and Cherry, 2014) doi:10.3115/v1/W14-3346 
         """
-        if ngrams is None:
-            temp = sentence_bleu(
-                [word_tokenize(r)], word_tokenize(h), auto_reweigh=True
+        if smooth == True:
+            return (
+                sentence_bleu(
+                    [word_tokenize(r)],
+                    word_tokenize(h),
+                    auto_reweigh=auto_reweigh,
+                    smoothing_function=smooth,
+                )
+                * 100
             )
         else:
-            temp = sentence_bleu(
-                [word_tokenize(r)], word_tokenize(h), weights=[1 / ngrams] * ngrams
-            )
-        if smooth == True:
-            return sentence_bleu(
-                [word_tokenize(r)],
-                word_tokenize(h),
-                auto_reweigh=True,
-                smoothing_function=cc.method4,
-            )
+            temp = bleu([h], [[r]]).score
 
-        if temp >= 0.0001:
+        if temp >= 1e-8:
             return temp
         else:
-            return check_bleu(r, h, smooth=True)
+            # Improvement to the NIST geometric sequence smoothing shown in doi:10.3115/v1/W14-3346; also follows auto_reweigh procedure explained here: https://github.com/nltk/nltk/issues/1554
+            return check_bleu(r, h, smooth=cc.method4, auto_reweigh=True)
 
     total_score = 0
     assert len(ref) == len(hyp)
