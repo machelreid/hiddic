@@ -1,16 +1,16 @@
-patience: 5
+patience: 10
 serialization_dir: /home/machelreid/results/hiddic/
 device: cuda
 clip: 5
-initial_lr: 0.003
+initial_lr: 0.001
 min_lr: 0
-lr_patience: 4
+lr_patience: 10
 keep_all_checkpoints: true
 val_data_limit: null
 max_epochs: 100
 training_data_fraction: null
 beam_size: 7
-min_length: 2
+min_length: 1
 max_length: 50
 n_best: 1
 ratio: null
@@ -31,7 +31,7 @@ decoder_hidden: 512
 datapath: /home/machelreid/data/hiddic/
 dataset: null
 
-seed: 13
+seed: 12
 
 train_batch_size: 64
 valid_batch_size: 40

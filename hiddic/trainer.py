@@ -448,11 +448,11 @@ class Trainer(object):
                     model_out.logits,
                     definition[:, 1:].contiguous().view(-1),
                     ignore_index=self._model.embeddings.tgt.padding_idx,
-                    reduction="sum",
+                    # reduction="sum",
                 )
 
                 # perplexity length
-                ppl[1] += definition.shape[0] * (definition.shape[1] - 1)
+                ppl[1] += 1  # definition.shape[0] * (definition.shape[1] - 1)
 
                 self._TB_validation_log.add_scalar(
                     "batch_perplexity",
