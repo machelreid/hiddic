@@ -3,6 +3,7 @@ import torch
 import numpy as np
 from sacrebleu import corpus_bleu as bleu
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+from nltk.tokenize import word_tokenize
 import tqdm
 import os
 
@@ -88,7 +89,7 @@ def batch_bleu(ref, hyp, reduction="average"):
 
         If ngrams < 4, uses Smoothing Function 4, as shown in A "Systematic Comparison of Smoothing Techniques for Sentence-Level BLEU" (Chen and Cherry, 2014) doi:10.3115/v1/W14-3346 
         """
-        if smooth == True:
+        if smooth is not None:
             return (
                 sentence_bleu(
                     [word_tokenize(r)],
