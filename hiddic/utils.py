@@ -90,20 +90,25 @@ def batch_bleu(ref, hyp, reduction="average"):
         If ngrams < 4, uses Smoothing Function 4, as shown in A "Systematic Comparison of Smoothing Techniques for Sentence-Level BLEU" (Chen and Cherry, 2014) doi:10.3115/v1/W14-3346 
         """
         if smooth is not None:
-            return (
-                sentence_bleu(
-                    [word_tokenize(r)],
-                    word_tokenize(h),
-                    auto_reweigh=auto_reweigh,
-                    smoothing_function=smooth,
+            try:
+                score = (
+                    sentence_bleu(
+                        [word_tokenize(r)],
+                        word_tokenize(h),
+                        auto_reweigh=auto_reweigh,
+                        smoothing_function=smooth,
+                    )
+                    * 100
                 )
-                * 100
-            )
-        else:
-            temp = bleu([h], [[r]]).score
+            except ZeroDivisionError:
+                score = 0.0
 
-        if temp >= 1e-8:
-            return temp
+            return score
+        else:
+            score = bleu([h], [[r]]).score
+
+        if score >= 1e-8:
+            return score
         else:
             # Improvement to the NIST geometric sequence smoothing shown in doi:10.3115/v1/W14-3346; also follows auto_reweigh procedure explained here: https://github.com/nltk/nltk/issues/1554
             return check_bleu(r, h, smooth=cc.method4, auto_reweigh=True)

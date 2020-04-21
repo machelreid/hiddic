@@ -7,6 +7,8 @@ import os
 import torch
 import torch.nn as nn
 from dotmap import DotMap
+import hashlib
+import json
 
 config_parser = StrictConfigParser(default=os.path.join("config", "hiddic.yaml"))
 
@@ -29,7 +31,15 @@ if __name__ == "__main__":
     device = torch.device("cuda" if use_cuda else "cpu")
 
     config.update(
-        {"serialization_dir": config.serialization_dir + "/" + config.dataset}
+        {
+            "serialization_dir": config.serialization_dir
+            + "/"
+            + config.dataset
+            + "/"
+            + hashlib.sha224(
+                json.dumps(dict(config.to_dict()), sort_keys=True).encode()
+            ).hexdigest()[:6]
+        }
     )
     ############### DATA ###############
     datamaker = DataMaker(data_fields, config.datapath)

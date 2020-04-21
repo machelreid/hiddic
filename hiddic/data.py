@@ -28,19 +28,6 @@ special_tokens = {
 special_tokens_list = [cls_token]
 
 
-class Field(data.Field):
-    def __init__(self, **kwargs):
-        self.tokenizer = kwargs.pop("tokenizer")
-        super().__init__(**kwargs)
-
-
-def get_huggingface_tokenizer(tokenizer, pretrained_model: str):
-
-    if pretrained_model is not None:
-        tokenizer = tokenizer.from_pretrained(pretrained_model)
-        return tokenizer
-
-
 class DataMaker(object):
     def __init__(self, fields=None, dataset_path: str = None):
 
@@ -225,10 +212,6 @@ class DataMaker(object):
             return output_sentences
 
 
-_bert_tokenizer = get_huggingface_tokenizer(BertTokenizer, "bert-base-uncased")
-_roberta_tokenizer = get_huggingface_tokenizer(RobertaTokenizer, "roberta-base")
-
-
 def get_dm_conf(_type, field_name):
     if _type is None:
         _type = "normal"
@@ -297,6 +280,61 @@ dm_conf = DotMap(
         },
     }
 )
+
+
+class Field(data.Field):
+    def __init__(self, **kwargs):
+        self.tokenizer = kwargs.pop("tokenizer")
+        super().__init__(**kwargs)
+
+    def pad(self, minibatch):
+        """Pad a batch of examples using this field.
+
+        Pads to self.fix_length if provided, otherwise pads to the length of
+        the longest example in the batch. Prepends self.init_token and appends
+        self.eos_token if those attributes are not None. Returns a tuple of the
+        padded list and a list containing lengths of each example if
+        `self.include_lengths` is `True` and `self.sequential` is `True`, else just
+        returns the padded list. If `self.sequential` is `False`, no padding is applied.
+        """
+        minibatch = list(minibatch)
+        if not self.sequential:
+            return minibatch
+
+        if self.fix_length is None:
+            max_len = max(len(x) for x in minibatch)
+        else:
+            max_len = min(
+                self.fix_length + (self.init_token, self.eos_token).count(None) - 2,
+                max(len(x) for x in minibatch),
+            )
+        padded, lengths = [], []
+        for x in minibatch:
+            if self.pad_first:
+                padded.append(
+                    [self.pad_token] * max(0, max_len - len(x))
+                    + ([] if self.init_token is None else [self.init_token])
+                    + list(x[-max_len:] if self.truncate_first else x[:max_len])
+                    + ([] if self.eos_token is None else [self.eos_token])
+                )
+            else:
+                padded.append(
+                    ([] if self.init_token is None else [self.init_token])
+                    + list(x[-max_len:] if self.truncate_first else x[:max_len])
+                    + ([] if self.eos_token is None else [self.eos_token])
+                    + [self.pad_token] * max(0, max_len - len(x))
+                )
+            lengths.append(
+                len(padded[-1])
+                - max(
+                    0,
+                    max_len
+                    - (len(x) + abs((self.init_token, self.eos_token).count(None) - 2)),
+                )
+            )
+        if self.include_lengths:
+            return (padded, lengths)
+        return padded
 
 
 def word_idx_getter(input, *args, **kwargs):
