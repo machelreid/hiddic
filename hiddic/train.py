@@ -33,7 +33,9 @@ if __name__ == "__main__":
     )
     ############### DATA ###############
     datamaker = DataMaker(data_fields, config.datapath)
-    datamaker.build_data(config.dataset)
+    datamaker.build_data(
+        config.dataset, max_len=config.max_length, lowercase=config.lowercase
+    )
     ####################################
     ####################################
 

@@ -209,7 +209,7 @@ class DataMaker(object):
                 sentence = []
                 for token_id in element:
                     token = _vocab.itos[token_id]
-                    if token not in ["<pad>", "<sos>"]:
+                    if token not in ["<pad>", "<sos>", "<eos>"]:
                         sentence.append(token)
                     else:
                         pass

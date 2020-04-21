@@ -223,7 +223,10 @@ class DefinitionProbing(nn.Module):
 
         output_indices = []
         for i in range(batch.shape[0]):
-            tensor = find_subtensor(output_ids[i], batch[i])
+            try:
+                tensor = find_subtensor(output_ids[i], batch[i])
+            except IndexError:
+                tensor = None
             if tensor is None:
                 try:
                     tensor = find_subtensor(output_ids[i][:-1], batch[i])

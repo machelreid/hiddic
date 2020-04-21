@@ -1,4 +1,4 @@
-patience: 10
+patience: 9
 serialization_dir: /home/machelreid/results/hiddic/
 device: cuda
 clip: 5
@@ -10,10 +10,13 @@ val_data_limit: null
 max_epochs: 100
 training_data_fraction: null
 beam_size: 7
-min_length: 1
-max_length: 50
 n_best: 1
 ratio: null
+
+min_length: 1
+max_length: 50
+lowercase: null
+
 lr_scheduling_metric: perplexity
 metric_decreases: true
 
